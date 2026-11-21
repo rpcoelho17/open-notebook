@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams } from 'next/navigation'
 import { NotebookHeader } from '../components/NotebookHeader'
 import { SourcesColumn } from '../components/SourcesColumn'
@@ -53,6 +53,55 @@ export default function NotebookPage() {
 
   const [mobileActiveTab, setMobileActiveTab] = useState<'sources' | 'chat' | 'studio'>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // Resizable Sources column width (persisted in localStorage, 220px–560px)
+  const [sourcesWidth, setSourcesWidth] = useState<number>(300)
+  const [isResizingSources, setIsResizingSources] = useState(false)
+  const resizeStartXRef = useRef<number>(0)
+  const resizeStartWidthRef = useRef<number>(300)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const saved = Number(localStorage.getItem('open_notebook_sources_width'))
+    if (Number.isFinite(saved) && saved >= 220 && saved <= 560) {
+      setSourcesWidth(saved)
+    }
+  }, [])
+
+  const handleSourcesResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      resizeStartXRef.current = e.clientX
+      resizeStartWidthRef.current = sourcesWidth
+      setIsResizingSources(true)
+    },
+    [sourcesWidth]
+  )
+
+  useEffect(() => {
+    if (!isResizingSources) return
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - resizeStartXRef.current
+      const next = Math.min(560, Math.max(220, resizeStartWidthRef.current + delta))
+      setSourcesWidth(next)
+    }
+    const handleMouseUp = () => {
+      setIsResizingSources(false)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('open_notebook_sources_width', String(sourcesWidth))
+      }
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizingSources, sourcesWidth])
 
   const [contextSelections, setContextSelections] = useState<ContextSelections>({
     sources: {},
@@ -193,13 +242,15 @@ export default function NotebookPage() {
         )}
 
         {/* Desktop 3-Column NotebookLM Layout */}
-        <div className="hidden lg:flex h-full min-h-0 gap-3 flex-row">
-          {/* Column 1: Sources */}
+        <div className="hidden lg:flex h-full min-h-0 flex-row">
+          {/* Column 1: Sources (resizable via drag handle on right edge) */}
           <div
             className={cn(
-              'h-full transition-all duration-150 flex-shrink-0',
-              sourcesCollapsed ? 'w-14' : 'w-[285px] xl:w-[305px]'
+              'h-full flex-shrink-0',
+              !isResizingSources && 'transition-[width] duration-150',
+              sourcesCollapsed && 'w-14'
             )}
+            style={sourcesCollapsed ? undefined : { width: `${sourcesWidth}px` }}
           >
             <SourcesColumn
               sources={sources}
@@ -216,8 +267,37 @@ export default function NotebookPage() {
             />
           </div>
 
+          {/* Drag-to-Resize Handle between Sources and Chat */}
+          {!sourcesCollapsed ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize Sources column"
+              title="Drag to resize Sources column (double-click to reset)"
+              onMouseDown={handleSourcesResizeStart}
+              onDoubleClick={() => {
+                setSourcesWidth(300)
+                if (typeof window !== 'undefined') {
+                  localStorage.setItem('open_notebook_sources_width', '300')
+                }
+              }}
+              className="w-3 flex-shrink-0 cursor-col-resize flex items-center justify-center group"
+            >
+              <div
+                className={cn(
+                  'w-[3px] h-16 rounded-full transition-colors',
+                  isResizingSources
+                    ? 'bg-[#4285f4]'
+                    : 'bg-transparent group-hover:bg-[#4285f4]/60'
+                )}
+              />
+            </div>
+          ) : (
+            <div className="w-3 flex-shrink-0" />
+          )}
+
           {/* Column 2: Center Chat Canvas */}
-          <div className="flex-1 min-w-0 h-full">
+          <div className="flex-1 min-w-0 h-full mr-3">
             <ChatColumn
               notebookId={notebookId}
               contextSelections={contextSelections}

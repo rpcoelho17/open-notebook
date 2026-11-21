@@ -9,6 +9,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import {
   Plus,
   FileText,
   Globe,
@@ -293,20 +299,41 @@ export function SourcesColumn({
               </p>
             </div>
           ) : (
-            <div className="space-y-0.5">
-              {sources.map((source) => {
-                const isIncluded = (contextSelections?.[source.id] ?? 'off') !== 'off'
-                return (
-                  <div
-                    key={source.id}
-                    className="group flex items-center gap-2.5 px-2 py-2 rounded-xl hover:bg-[#26282e] transition-colors cursor-pointer"
-                    onClick={() => openModal('source', source.id)}
-                  >
-                    {getSourceIcon(source)}
+            <TooltipProvider delayDuration={250}>
+              <div className="space-y-0.5">
+                {sources.map((source) => {
+                  const isIncluded = (contextSelections?.[source.id] ?? 'off') !== 'off'
+                  const fullTitle = source.title || 'Untitled source'
+                  return (
+                    <div
+                      key={source.id}
+                      className="group flex items-center gap-2.5 px-2 py-2 rounded-xl hover:bg-[#26282e] transition-colors cursor-pointer"
+                      onClick={() => openModal('source', source.id)}
+                    >
+                      {getSourceIcon(source)}
 
-                    <span className="flex-1 min-w-0 text-[13px] text-[#e3e5e8] truncate">
-                      {source.title || 'Untitled source'}
-                    </span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="flex-1 min-w-0 text-[13px] text-[#e3e5e8] truncate">
+                            {fullTitle}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="right"
+                          align="center"
+                          sideOffset={10}
+                          className="max-w-[360px] text-wrap rounded-xl bg-[#25272d] border border-[#3a3d46] text-[#e8eaed] px-3 py-2 shadow-2xl z-50"
+                        >
+                          <p className="text-xs font-medium leading-snug break-words">
+                            {fullTitle}
+                          </p>
+                          {source.asset?.url && (
+                            <p className="text-[11px] text-[#9aa0a6] mt-1 break-all leading-snug">
+                              {source.asset.url}
+                            </p>
+                          )}
+                        </TooltipContent>
+                      </Tooltip>
 
                     {/* Hover actions menu */}
                     <DropdownMenu>
@@ -383,7 +410,8 @@ export function SourcesColumn({
                   <Loader2 className="h-4 w-4 animate-spin text-[#9aa0a6]" />
                 </div>
               )}
-            </div>
+              </div>
+            </TooltipProvider>
           )}
         </div>
       </div>
