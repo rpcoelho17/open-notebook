@@ -59,6 +59,18 @@ export const chatApi = {
     return response.data
   },
 
+  // Record a completed streaming/voice Q&A turn asynchronously into the session database
+  appendMessages: async (sessionId: string, userMessage: string, aiMessage: string) => {
+    const response = await apiClient.post<{
+      session_id: string
+      messages: NotebookChatMessage[]
+    }>(`/chat/sessions/${sessionId}/append`, {
+      user_message: userMessage,
+      ai_message: aiMessage,
+    })
+    return response.data
+  },
+
   buildContext: async (data: BuildContextRequest) => {
     const response = await apiClient.post<BuildContextResponse>(
       `/chat/context`,

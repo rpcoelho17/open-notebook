@@ -23,6 +23,7 @@ import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import { toast } from 'sonner'
 import { useTranslation } from '@/lib/hooks/use-translation'
 import { useModelDefaults } from '@/lib/hooks/use-models'
+import { GeminiLiveIcon } from '@/components/common/GeminiLiveIcon'
 
 interface NotebookContextStats {
   sourcesInsights: number
@@ -40,6 +41,7 @@ interface ChatPanelProps {
   onSendMessage: (message: string, modelOverride?: string) => Promise<boolean>
   modelOverride?: string
   onModelChange?: (model?: string) => void
+  onStartLiveVoice?: () => void
   // Session management props
   sessions?: BaseChatSession[]
   currentSessionId?: string | null
@@ -64,6 +66,7 @@ export function ChatPanel({
   onSendMessage,
   modelOverride,
   onModelChange,
+  onStartLiveVoice,
   sessions = [],
   currentSessionId,
   onCreateSession,
@@ -112,36 +115,50 @@ export function ChatPanel({
             <span aria-hidden className="h-3.5 w-[3px] rounded-full bg-teal" />
             {title || (contextType === 'source' ? t('chat.chatWith', { name: t('navigation.sources') }) : t('chat.chatWith', { name: t('common.notebook') }))}
           </CardTitle>
-          {onSelectSession && onCreateSession && onDeleteSession && (
-            <Dialog open={sessionManagerOpen} onOpenChange={setSessionManagerOpen}>
+          <div className="flex items-center gap-2">
+            {onStartLiveVoice && (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
-                className="gap-2 text-muted-foreground"
-                onClick={() => setSessionManagerOpen(true)}
-                // Switching mid-reply would show the old session's messages (#1391)
-                disabled={loadingSessions || isStreaming}
+                className="gap-1.5 text-xs h-7 border-primary/30 hover:border-primary text-foreground"
+                onClick={onStartLiveVoice}
+                title="Talk to Notebook (Gemini Live)"
               >
-                <Clock className="h-4 w-4" />
-                <span className="text-xs">{t('chat.sessions')}</span>
+                <GeminiLiveIcon className="h-3.5 w-3.5 text-primary" />
+                <span>Talk</span>
               </Button>
-              <DialogContent className="sm:max-w-[420px] p-0 overflow-hidden">
-                <DialogTitle className="sr-only">{t('chat.sessionsTitle')}</DialogTitle>
-                <SessionManager
-                  sessions={sessions}
-                  currentSessionId={currentSessionId ?? null}
-                  onCreateSession={(title) => onCreateSession?.(title)}
-                  onSelectSession={(sessionId) => {
-                    onSelectSession(sessionId)
-                    setSessionManagerOpen(false)
-                  }}
-                  onUpdateSession={(sessionId, title) => onUpdateSession?.(sessionId, title)}
-                  onDeleteSession={(sessionId) => onDeleteSession?.(sessionId)}
-                  loadingSessions={loadingSessions}
-                />
-              </DialogContent>
-            </Dialog>
-          )}
+            )}
+            {onSelectSession && onCreateSession && onDeleteSession && (
+              <Dialog open={sessionManagerOpen} onOpenChange={setSessionManagerOpen}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-2 text-muted-foreground"
+                  onClick={() => setSessionManagerOpen(true)}
+                  // Switching mid-reply would show the old session's messages (#1391)
+                  disabled={loadingSessions || isStreaming}
+                >
+                  <Clock className="h-4 w-4" />
+                  <span className="text-xs">{t('chat.sessions')}</span>
+                </Button>
+                <DialogContent className="sm:max-w-[420px] p-0 overflow-hidden">
+                  <DialogTitle className="sr-only">{t('chat.sessionsTitle')}</DialogTitle>
+                  <SessionManager
+                    sessions={sessions}
+                    currentSessionId={currentSessionId ?? null}
+                    onCreateSession={(title) => onCreateSession?.(title)}
+                    onSelectSession={(sessionId) => {
+                      onSelectSession(sessionId)
+                      setSessionManagerOpen(false)
+                    }}
+                    onUpdateSession={(sessionId, title) => onUpdateSession?.(sessionId, title)}
+                    onDeleteSession={(sessionId) => onDeleteSession?.(sessionId)}
+                    loadingSessions={loadingSessions}
+                  />
+                </DialogContent>
+              </Dialog>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="flex-1 flex flex-col min-h-0 p-0">
@@ -224,6 +241,7 @@ export function ChatPanel({
           isStreaming={isStreaming}
           modelOverride={modelOverride}
           onModelChange={onModelChange}
+          onStartLiveVoice={onStartLiveVoice}
         />
       </CardContent>
     </Card>
@@ -239,13 +257,15 @@ interface ChatComposerProps {
   isStreaming: boolean
   modelOverride?: string
   onModelChange?: (model?: string) => void
+  onStartLiveVoice?: () => void
 }
 
 function ChatComposer({
   onSendMessage,
   isStreaming,
   modelOverride,
-  onModelChange
+  onModelChange,
+  onStartLiveVoice
 }: ChatComposerProps) {
   const { t } = useTranslation()
   const chatInputId = useId()
@@ -315,6 +335,19 @@ function ChatComposer({
           className="flex-1 min-h-[40px] max-h-[100px] resize-none py-2 px-3 min-w-0"
           rows={1}
         />
+        {onStartLiveVoice && (
+          <Button
+            type="button"
+            onClick={onStartLiveVoice}
+            variant="ghost"
+            size="icon"
+            className="h-[40px] w-[40px] flex-shrink-0 hover:bg-primary/10 rounded-full"
+            title="Talk to Notebook (Gemini Live)"
+            aria-label="Talk to Notebook (Gemini Live)"
+          >
+            <GeminiLiveIcon circle className="h-7 w-7 text-primary" />
+          </Button>
+        )}
         <Button
           onClick={handleSend}
           disabled={!input.trim() || isStreaming || noChatModel}

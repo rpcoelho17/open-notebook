@@ -184,7 +184,11 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
   }, [notebookId, sources, notes, contextSelections])
 
   // Send message (synchronous, no streaming)
-  const sendMessage = useCallback(async (message: string, modelOverride?: string) => {
+  const sendMessage = useCallback(async (
+    message: string,
+    modelOverride?: string,
+    extraContext?: Record<string, unknown>
+  ) => {
     // Mark sending before any await (including session creation) so the
     // composer and session switcher stay disabled for the whole send (#1597).
     sendingRef.current = true
@@ -229,7 +233,8 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
       setMessages(prev => [...prev, userMessage])
 
       // Build context and send message
-      const context = await buildContext()
+      const baseContext = await buildContext()
+      const context = extraContext ? { ...baseContext, ...extraContext } : baseContext
       const response = await chatApi.sendMessage({
         session_id: sessionId,
         message,
@@ -331,6 +336,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     pendingModelOverride,
 
     // Actions
+    buildContext,
     createSession,
     updateSession,
     deleteSession,

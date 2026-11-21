@@ -400,6 +400,45 @@ async def execute_chat(request: ExecuteChatRequest):
         raise HTTPException(status_code=500, detail=f"Error executing chat: {str(e)}")
 
 
+class AppendMessagesRequest(BaseModel):
+    user_message: str = Field(..., description="User question or spoken prompt")
+    ai_message: str = Field(..., description="Completed AI response to record")
+
+
+@router.post("/chat/sessions/{session_id}/append", response_model=ExecuteChatResponse)
+async def append_session_messages(session_id: str, request: AppendMessagesRequest):
+    """Record a completed streaming/voice Q&A turn directly into the chat session database."""
+    try:
+        full_session_id, session = await get_session_or_404(session_id)
+
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        new_messages = []
+        if request.user_message.strip():
+            new_messages.append(HumanMessage(content=request.user_message.strip(), id=str(uuid4())))
+        if request.ai_message.strip():
+            new_messages.append(AIMessage(content=request.ai_message.strip(), id=str(uuid4())))
+
+        config = RunnableConfig(configurable={"thread_id": full_session_id})
+        if new_messages:
+            await asyncio.to_thread(chat_graph.update_state, config, {"messages": new_messages})
+            await session.save()
+
+        thread_state = await asyncio.to_thread(chat_graph.get_state, config=config)
+        messages: list[ChatMessage] = []
+        if thread_state and thread_state.values and "messages" in thread_state.values:
+            messages = extract_chat_messages(thread_state.values["messages"])
+
+        return ExecuteChatResponse(session_id=session_id, messages=messages)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error appending messages to session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error appending messages: {str(e)}")
+
+
 @router.post("/chat/context", response_model=BuildContextResponse)
 async def build_context(request: BuildContextRequest):
     """Build context for a notebook based on context configuration."""
