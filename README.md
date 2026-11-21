@@ -287,8 +287,8 @@ Open Notebook is MIT licensed. See the [LICENSE](LICENSE) file for details.
 [stars-url]: https://github.com/lfnovo/open-notebook/stargazers
 [issues-shield]: https://img.shields.io/github/issues/lfnovo/open-notebook.svg?style=for-the-badge
 [issues-url]: https://github.com/lfnovo/open-notebook/issues
-[license-shield]: https://img.shields.io/github/license/lfnovo/open-notebook.svg?style=for-the-badge
-[license-url]: https://github.com/lfnovo/open-notebook/blob/main/LICENSE
+[license-shield]: https://img.shields.io/github/license/rpcoelho17/open-notebook.svg?style=for-the-badge
+[license-url]: https://github.com/rpcoelho17/open-notebook/blob/notebooklm-voice-ui/LICENSE
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/lfnovo
 [Next.js]: https://img.shields.io/badge/Next.js-000000?style=for-the-badge&logo=next.js&logoColor=white
