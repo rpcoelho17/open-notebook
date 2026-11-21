@@ -1,29 +1,19 @@
 <a id="readme-top"></a>
 
-<!-- [![Contributors][contributors-shield]][contributors-url] -->
-[![Forks][forks-shield]][forks-url]
-[![Stargazers][stars-shield]][stars-url]
-[![Issues][issues-shield]][issues-url]
 [![MIT License][license-shield]][license-url]
-<!-- [![LinkedIn][linkedin-shield]][linkedin-url] -->
 
 
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <a href="https://github.com/lfnovo/open-notebook">
-    <img src="docs/assets/hero.svg" alt="Logo">
-  </a>
+  <img src="docs/assets/voice-logo.svg" alt="Open Notebook Voice Edition Logo" width="88" height="88">
 
-  <h3 align="center">Open Notebook</h3>
+  <h2 align="center">Open Notebook — Voice Edition</h2>
 
   <p align="center">
-    An open source, privacy-focused alternative to Google's Notebook LM!
-    <br /><strong>Join our <a href="https://discord.gg/37XJPXfz2w">Discord server</a> for help, to share workflow ideas, and suggest features!</strong>
+    An open-source, multi-model AI research workspace with <strong>real-time Speech-to-Speech voice chat directly with your documents</strong> — powered by <strong>Gemini Live</strong> &amp; local neural voice.
     <br />
-    <a href="https://www.open-notebook.ai"><strong>Checkout our website »</strong></a>
-    <br />
-    Follow <a href="https://x.com/lfnovo">@lfnovo on X</a> for updates
+    <sub>Fork of <a href="https://github.com/lfnovo/open-notebook">lfnovo/open-notebook</a> (MIT License)</sub>
     <br />
     <br />
     <a href="docs/0-START-HERE/index.md">📚 Get Started</a>
@@ -35,10 +25,6 @@
     <a href="docs/1-INSTALLATION/index.md">🚀 Deploy</a>
   </p>
 </div>
-
-<p align="center">
-<a href="https://trendshift.io/repositories/14536" target="_blank"><img src="https://trendshift.io/api/badge/repositories/14536" alt="lfnovo%2Fopen-notebook | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</p>
 
 <div align="center">
   <!-- Keep these links. Translations come from zdoc.app, which follows the current README automatically. Arabic and Turkish are hand-maintained under docs/i18n/ only because zdoc.app does not serve them; new languages are not added by hand (#1550). -->
@@ -54,17 +40,17 @@
   <a href="https://zdoc.app/zh/lfnovo/open-notebook">中文</a>
 </div>
 
-## 🎙️ About This Fork: Voice Chat with Your Documents
+## 🎙️ Voice Chat with Your Documents
 
 ![Open Notebook Dark Voice Workspace](docs/assets/voice-workspace-dark.png)
 
-This fork of [Open Notebook](https://github.com/lfnovo/open-notebook) adds **built-in, real-time Speech-to-Speech voice chat directly with your documents**, along with a NotebookLM-inspired dark workspace:
+This fork extends [Open Notebook](https://github.com/lfnovo/open-notebook) with **built-in, real-time Speech-to-Speech voice chat grounded directly in your documents**, paired with a streamlined dark 3-column workspace:
 
 - **🗣️ Talk Directly to Your Documents:** Click the voice icon inside any notebook to ask spoken questions grounded in the full text of your selected sources and notes, with every voice turn saved automatically to your chat history.
 - **🎛️ Simple 2-Option Speech-to-Speech Switcher** (accessible from the chat **Sliders** menu or **⚙ Settings**):
   1. **Gemini Live (Default):** Native speech-to-speech powered by Gemini Live (`gemini-2.5-flash-native-audio-latest`) via a server-side WebSocket proxy (keeps your API key in `.env`). Includes a 1-click toggle between **Press ↑ to send** *(default — dictate, review/edit, then send)* and **Hands-free** conversation.
   2. **Local Voice + Chat Model:** Local `faster-whisper` speech-to-text + your chosen streaming chat model + local **Kokoro-82M** neural text-to-speech, plus a **Read Aloud** speaker button on every reply and overview.
-- **🖥️ NotebookLM-Style Dark 3-Column UI (`Sources` | `Chat` | `Studio`):** Drag-to-resize Sources panel with full-title/URL hover tooltips, automatic notebook overviews, paired Q&A **Save to note**, **Studio Infographics**, per-turn **Exa Web Search**, and quick **Thinking Effort** controls.
+- **🖥️ Dark 3-Column Research Workspace (`Sources` | `Chat` | `Studio`):** Drag-to-resize Sources panel with full-title/URL hover tooltips, automatic notebook overviews, paired Q&A **Save to note**, **Studio Infographics**, per-turn **Exa Web Search**, and quick **Thinking Effort** controls.
 - **🚀 One-Click Windows Launchers:** Start or stop the entire stack locally with `start-open-notebook.bat` / `stop-open-notebook.bat`.
 
 | Quick Chat Voice Switcher | Voice, Chat Model & Studio Settings |
@@ -73,43 +59,16 @@ This fork of [Open Notebook](https://github.com/lfnovo/open-notebook) adds **bui
 
 ---
 
-## A private, multi-model, 100% local, full-featured alternative to Notebook LM
-
-In a world dominated by Artificial Intelligence, having the ability to think 🧠 and acquire new knowledge 💡, is a skill that should not be a privilege for a few, nor restricted to a single provider.
+## Core Capabilities
 
 **Open Notebook empowers you to:**
-- 🔒 **Control your data** - Keep your research private and secure
-- 🤖 **Choose your AI models** - 20+ providers including OpenAI, Anthropic, Google, Mistral, Ollama and any OpenAI-compatible server (LM Studio, vLLM)
+- 🔒 **Control your data** - Self-hosted research workspace where your data stays yours
+- 🤖 **Choose your AI models** - 20+ providers including Google Gemini, OpenAI, Anthropic, Mistral, Ollama, and any OpenAI-compatible server (LM Studio, vLLM)
 - 📚 **Organize multi-modal content** - PDFs, videos, audio, web pages, and more
-- 🎙️ **Generate professional podcasts** - Advanced multi-speaker podcast generation
+- 🎙️ **Talk to your sources & generate podcasts** - Real-time Speech-to-Speech voice chat plus multi-speaker podcast generation
 - 🔍 **Search intelligently** - Full-text and vector search across all your content
-- 💬 **Chat with context** - AI conversations powered by your research
+- 💬 **Chat with context** - Grounded AI conversations with clickable source citations
 - 🌐 **Multi-language UI** - English, Bengali, Catalan, Chinese (Simplified & Traditional), French, German, Italian, Japanese, Polish, Portuguese, Russian, Spanish and Turkish
-
-Learn more about our project at [https://www.open-notebook.ai](https://www.open-notebook.ai)
-
----
-
-## 🆚 Open Notebook vs Google Notebook LM
-
-| Feature | Open Notebook | Google Notebook LM | Advantage |
-|---------|---------------|--------------------|-----------|
-| **Privacy & Control** | Self-hosted, your data | Google cloud only | Complete data sovereignty |
-| **AI Provider Choice** | 20+ providers, cloud or local (OpenAI, Anthropic, Google, Ollama, LM Studio, etc.) | Google models only | Flexibility and cost optimization |
-| **Podcast Speakers** | 1-4 speakers with custom profiles | 2 speakers only | Extreme flexibility |
-| **Content Transformations** | Custom and built-in | Limited options | Unlimited processing power |
-| **API Access** | Full REST API | No API | Complete automation |
-| **Deployment** | Docker, cloud, or local | Google hosted only | Deploy anywhere |
-| **Citations** | Answers cite the sources, notes and insights they used | Comprehensive with sources | Research integrity |
-| **Customization** | Open source, fully customizable | Closed system | Unlimited extensibility |
-| **Cost** | Pay only for AI usage | Free tier + Monthly subscription | Transparent and controllable |
-
-**Why Choose Open Notebook?**
-- 🔒 **Privacy First**: Your sensitive research stays completely private
-- 💰 **Cost Control**: Choose cheaper AI providers or run locally with Ollama
-- 🎙️ **Better Podcasts**: Full script control and multi-speaker flexibility vs limited 2-speaker deep-dive format
-- 🔧 **Unlimited Customization**: Modify, extend, and integrate as needed
-- 🌐 **No Vendor Lock-in**: Switch providers, deploy anywhere, own your data
 
 ### Built With
 
@@ -177,11 +136,6 @@ Done! Create a notebook, add a source and start chatting. Full walkthrough: [Con
 - **🐛 Report Issues**: [GitHub Issues](https://github.com/lfnovo/open-notebook/issues)
 
 ---
-
-## Star History
-
-[![Star History Chart](https://star-history.dera.page/svg?repos=lfnovo/open-notebook&type=date&legend=top-left)](https://star-history.dera.page/#lfnovo/open-notebook&type=date&legend=top-left)
-
 
 ## Provider Support Matrix
 
