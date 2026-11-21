@@ -56,6 +56,8 @@
 
 ## 🎙️ About This Fork: Voice Chat with Your Documents
 
+![Open Notebook Dark Voice Workspace](docs/assets/voice-workspace-dark.png)
+
 This fork of [Open Notebook](https://github.com/lfnovo/open-notebook) adds **built-in, real-time Speech-to-Speech voice chat directly with your documents**, along with a NotebookLM-inspired dark workspace:
 
 - **🗣️ Talk Directly to Your Documents:** Click the voice icon inside any notebook to ask spoken questions grounded in the full text of your selected sources and notes, with every voice turn saved automatically to your chat history.
@@ -65,11 +67,13 @@ This fork of [Open Notebook](https://github.com/lfnovo/open-notebook) adds **bui
 - **🖥️ NotebookLM-Style Dark 3-Column UI (`Sources` | `Chat` | `Studio`):** Drag-to-resize Sources panel with full-title/URL hover tooltips, automatic notebook overviews, paired Q&A **Save to note**, **Studio Infographics**, per-turn **Exa Web Search**, and quick **Thinking Effort** controls.
 - **🚀 One-Click Windows Launchers:** Start or stop the entire stack locally with `start-open-notebook.bat` / `stop-open-notebook.bat`.
 
+| Quick Chat Voice Switcher | Voice, Chat Model & Studio Settings |
+| :---: | :---: |
+| ![Speech-to-Speech Switcher Popover](docs/assets/voice-switcher-popover.png) | ![Voice and Model Settings Dialog](docs/assets/voice-settings-dialog.png) |
+
 ---
 
 ## A private, multi-model, 100% local, full-featured alternative to Notebook LM
-
-![New Notebook](docs/assets/asset_list.png)
 
 In a world dominated by Artificial Intelligence, having the ability to think 🧠 and acquire new knowledge 💡, is a skill that should not be a privilege for a few, nor restricted to a single provider.
 
