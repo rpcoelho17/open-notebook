@@ -18,6 +18,8 @@ import {
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import {
   useVoiceSettingsStore,
+  VOICE_ENGINE_OPTIONS,
+  GEMINI_SEND_MODE_OPTIONS,
   REASONING_EFFORT_OPTIONS,
 } from '@/lib/stores/voice-settings-store'
 import { ContextSelections } from '../[id]/page'
@@ -115,6 +117,39 @@ function cleanForSpeech(raw: string): string {
     .trim()
 }
 
+function floatTo16kPcmBase64(input: Float32Array, inputSampleRate: number): string {
+  const ratio = inputSampleRate / 16000
+  const outLen = Math.max(1, Math.floor(input.length / ratio))
+  const pcm16 = new Int16Array(outLen)
+  for (let i = 0; i < outLen; i++) {
+    const srcIdx = Math.min(input.length - 1, Math.floor(i * ratio))
+    const s = Math.max(-1, Math.min(1, input[srcIdx]))
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+  }
+  const bytes = new Uint8Array(pcm16.buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
+function base64Pcm24kToFloat32(b64: string): Float32Array {
+  const binary = atob(b64)
+  const len = binary.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  const pcm16 = new Int16Array(bytes.buffer)
+  const float32 = new Float32Array(pcm16.length)
+  for (let i = 0; i < pcm16.length; i++) {
+    float32[i] = pcm16[i] / 32768
+  }
+  return float32
+}
+
 // Extract earliest natural phrase from streaming text so speech starts fast without chopping words
 function popSpeakableChunk(buffer: string, isFirstChunk: boolean): [string, string] | null {
   // 1. Sentence boundary (. ! ? followed by space or newline)
@@ -156,12 +191,16 @@ export function ChatColumn({
   const { openModal } = useModalManager()
   const {
     engine,
+    geminiSendMode,
     voiceModel,
     reasoningEffort,
+    geminiVoice,
     kokoroVoice,
     edgeVoice,
     markNoteUnread,
     webSearchEnabled,
+    setEngine,
+    setGeminiSendMode,
     setWebSearchEnabled,
     setReasoningEffort,
   } = useVoiceSettingsStore()
@@ -219,13 +258,38 @@ export function ChatColumn({
   const ttsAudioUrlRef = useRef<string | null>(null)
 
   const engineRef = useRef(engine)
+  const geminiSendModeRef = useRef(geminiSendMode)
+  const geminiVoiceRef = useRef(geminiVoice)
   const kokoroVoiceRef = useRef(kokoroVoice)
   const edgeVoiceRef = useRef(edgeVoice)
   const voiceModelRef = useRef(resolvedVoiceModel)
 
+  // Gemini Live S2S WebSocket + WebAudio refs
+  const geminiWsRef = useRef<WebSocket | null>(null)
+  const geminiMicCtxRef = useRef<AudioContext | null>(null)
+  const geminiProcessorRef = useRef<ScriptProcessorNode | null>(null)
+  const geminiPlayCtxRef = useRef<AudioContext | null>(null)
+  const geminiNextPlayTimeRef = useRef(0)
+  const geminiActiveSourcesRef = useRef<AudioBufferSourceNode[]>([])
+  const geminiUserBufRef = useRef('')
+  const geminiUserCommittedRef = useRef(false)
+  const geminiAiBufRef = useRef('')
+  const geminiSpeakingTimerRef = useRef<number | null>(null)
+  const geminiAiSpeakingRef = useRef(false)
+  const geminiEchoTailUntilRef = useRef(0)
+  const geminiLastVoiceActivityRef = useRef(0)
+  const resumeDictationAfterAiRef = useRef<() => void>(() => {})
+  const [geminiConnecting, setGeminiConnecting] = useState(false)
+
   useEffect(() => {
     engineRef.current = engine
   }, [engine])
+  useEffect(() => {
+    geminiSendModeRef.current = geminiSendMode
+  }, [geminiSendMode])
+  useEffect(() => {
+    geminiVoiceRef.current = geminiVoice
+  }, [geminiVoice])
   useEffect(() => {
     kokoroVoiceRef.current = kokoroVoice
   }, [kokoroVoice])
@@ -343,9 +407,8 @@ export function ChatColumn({
   const fetchTtsBlob = useCallback(async (text: string, signal: AbortSignal): Promise<Blob | null> => {
     const clean = cleanForSpeech(text)
     if (!clean) return null
-    const activeEngine = engineRef.current
-    const provider = activeEngine === 'openai-edge' ? 'edge' : 'kokoro'
-    const voice = provider === 'edge' ? edgeVoiceRef.current : kokoroVoiceRef.current
+    const provider = 'kokoro'
+    const voice = kokoroVoiceRef.current || 'af_heart'
 
     const res = await fetch(LOCAL_TTS_URL, {
       method: 'POST',
@@ -654,21 +717,414 @@ export function ChatColumn({
     }
   }, [input])
 
+  // Stop scheduled Gemini Live audio buffers (used on barge-in, Stop button, or disconnect)
+  const stopGeminiLivePlayback = useCallback(() => {
+    if (geminiSpeakingTimerRef.current) {
+      window.clearTimeout(geminiSpeakingTimerRef.current)
+      geminiSpeakingTimerRef.current = null
+    }
+    for (const src of geminiActiveSourcesRef.current) {
+      try {
+        src.stop()
+      } catch {
+        // ignore
+      }
+    }
+    geminiActiveSourcesRef.current = []
+    if (geminiPlayCtxRef.current) {
+      geminiNextPlayTimeRef.current = geminiPlayCtxRef.current.currentTime
+    }
+    geminiAiSpeakingRef.current = false
+    geminiEchoTailUntilRef.current = Date.now() + 500
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getAudioTracks().forEach((t) => {
+        t.enabled = true
+      })
+    }
+    setIsAiSpeaking(false)
+  }, [])
+
+  const stopGeminiLiveSession = useCallback(() => {
+    voiceActiveRef.current = false
+    isRespondingRef.current = false
+    setVoiceModeActive(false)
+    setIsStreamingVoiceReply(false)
+    setGeminiConnecting(false)
+    stopGeminiLivePlayback()
+    stopMicCapture()
+
+    if (geminiProcessorRef.current) {
+      try {
+        geminiProcessorRef.current.disconnect()
+      } catch {
+        // ignore
+      }
+      geminiProcessorRef.current = null
+    }
+    if (geminiMicCtxRef.current && geminiMicCtxRef.current.state !== 'closed') {
+      geminiMicCtxRef.current.close().catch(() => {})
+      geminiMicCtxRef.current = null
+    }
+    if (geminiPlayCtxRef.current && geminiPlayCtxRef.current.state !== 'closed') {
+      geminiPlayCtxRef.current.close().catch(() => {})
+      geminiPlayCtxRef.current = null
+    }
+    if (geminiWsRef.current) {
+      try {
+        if (geminiWsRef.current.readyState === WebSocket.OPEN) {
+          geminiWsRef.current.send(JSON.stringify({ type: 'close' }))
+        }
+        geminiWsRef.current.close()
+      } catch {
+        // ignore
+      }
+      geminiWsRef.current = null
+    }
+
+    // Preserve any partial AI transcript generated before stopping
+    const leftoverUser = geminiUserBufRef.current.trim()
+    const leftoverUserCommitted = geminiUserCommittedRef.current
+    const leftoverAi = geminiAiBufRef.current.trim()
+    geminiUserBufRef.current = ''
+    geminiUserCommittedRef.current = false
+    geminiAiBufRef.current = ''
+    if (leftoverAi) {
+      if (leftoverUser && !leftoverUserCommitted) {
+        appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: leftoverUser })
+      }
+      appendVoiceTurn({ id: `voice-ai-${Date.now() + 1}`, type: 'ai', content: leftoverAi })
+      void persistVoiceTurnToDb(leftoverUser || '(Voice message)', leftoverAi)
+    }
+    setStreamingReplyText('')
+    setMicLevel(0)
+  }, [stopGeminiLivePlayback, stopMicCapture, appendVoiceTurn, persistVoiceTurnToDb])
+
+  const startGeminiLiveSession = useCallback(async () => {
+    const isManualMode = geminiSendModeRef.current === 'manual'
+    setGeminiConnecting(true)
+    try {
+      let handsFreeStream: MediaStream | null = null
+      if (!isManualMode) {
+        handsFreeStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        })
+        mediaStreamRef.current = handsFreeStream
+      }
+
+      // Fetch FULL text of every checked source so Gemini Live has every detail (not just short insights!)
+      const checkedSources = sources.filter(
+        (s) => (contextSelections.sources[s.id] ?? 'off') !== 'off'
+      )
+      const fullSourceBlocks = await Promise.all(
+        checkedSources.map(async (s) => {
+          try {
+            const res = await fetch(`/api/sources/${encodeURIComponent(s.id)}`)
+            if (res.ok) {
+              const detail = await res.json()
+              const body = String(detail.full_text || detail.content || '').slice(0, 35000)
+              if (body.trim()) {
+                return `[Source: ${detail.title || s.title || s.id}]\n${body}`
+              }
+            }
+          } catch {
+            // fall back below
+          }
+          return `[Source: ${s.title || s.id}]\n(No extracted text available)`
+        })
+      )
+      const sourcesText = fullSourceBlocks.join('\n\n')
+
+      const ctx = await chat.buildContext()
+      const notesText = ((ctx?.notes as Array<Record<string, unknown>>) || [])
+        .map(
+          (n) =>
+            `[Note: ${n.title || n.id || 'Untitled'}]\n${String(n.content || n.text || '').slice(
+              0,
+              6000
+            )}`
+        )
+        .join('\n\n')
+
+      const systemInstruction = `You are a knowledgeable, helpful voice research assistant for the notebook "${
+        notebook?.name || 'Notebook'
+      }".
+Answer the user's spoken or typed questions directly based on the complete notebook sources and notes below.
+Give clear, thorough, well-explained spoken answers — cite specific source names, numbers, and concrete details whenever relevant, and speak in natural conversational sentences rather than overly terse one-liners.
+
+NOTEBOOK SOURCES:
+---
+${sourcesText.trim() || 'No source documents selected.'}
+---
+
+NOTEBOOK NOTES:
+---
+${notesText.trim() || 'No notes available.'}
+---`
+
+      const wsHost =
+        typeof window !== 'undefined' ? window.location.hostname || '127.0.0.1' : '127.0.0.1'
+      const wsProto = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss' : 'ws'
+      const ws = new WebSocket(`${wsProto}://${wsHost}:5055/api/gemini-live/ws`)
+      geminiWsRef.current = ws
+      geminiUserBufRef.current = ''
+      geminiUserCommittedRef.current = false
+      geminiAiBufRef.current = ''
+
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      const playCtx = new AudioCtx({ sampleRate: 24000 })
+      geminiPlayCtxRef.current = playCtx
+      geminiNextPlayTimeRef.current = playCtx.currentTime
+
+      ws.onopen = () => {
+        ws.send(
+          JSON.stringify({
+            type: 'setup',
+            model: 'gemini-2.5-flash-native-audio-latest',
+            voice: geminiVoiceRef.current || 'Kore',
+            system_instruction: systemInstruction,
+          })
+        )
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data as string)
+          if (msg.type === 'ready') {
+            setGeminiConnecting(false)
+            if (isManualMode) {
+              // Press ↑ to send mode: dictate into the chat box (user reviews/edits and presses ↑)
+              void startInlineVoiceMode()
+            } else if (handsFreeStream) {
+              voiceActiveRef.current = true
+              setVoiceModeActive(true)
+              // Hands-free mode: stream 16kHz PCM mic audio directly to Gemini Live
+              const micCtx = new AudioCtx()
+              geminiMicCtxRef.current = micCtx
+              const micSrc = micCtx.createMediaStreamSource(handsFreeStream)
+              const processor = micCtx.createScriptProcessor(4096, 1, 1)
+              geminiProcessorRef.current = processor
+
+              processor.onaudioprocess = (e) => {
+                if (!voiceActiveRef.current || ws.readyState !== WebSocket.OPEN) return
+                if (geminiAiSpeakingRef.current || Date.now() < geminiEchoTailUntilRef.current) {
+                  setMicLevel(0)
+                  return
+                }
+                const inputData = e.inputBuffer.getChannelData(0)
+                let sumSq = 0
+                for (let i = 0; i < inputData.length; i++) {
+                  sumSq += inputData[i] * inputData[i]
+                }
+                const rms = Math.sqrt(sumSq / inputData.length)
+                setMicLevel(Math.min(1, rms * 9))
+
+                const now = Date.now()
+                if (rms > 0.015) {
+                  geminiLastVoiceActivityRef.current = now
+                }
+                if (now - geminiLastVoiceActivityRef.current <= 1200) {
+                  const b64 = floatTo16kPcmBase64(inputData, micCtx.sampleRate)
+                  ws.send(JSON.stringify({ type: 'audio', data: b64 }))
+                }
+              }
+
+              micSrc.connect(processor)
+              processor.connect(micCtx.destination)
+            }
+          } else if (msg.type === 'input_transcript' && msg.text) {
+            if (!isManualMode && !geminiAiSpeakingRef.current && Date.now() >= geminiEchoTailUntilRef.current) {
+              geminiUserBufRef.current += msg.text
+              setInput(geminiUserBufRef.current.trim())
+            }
+          } else if (msg.type === 'output_transcript' && msg.text) {
+            if (!geminiAiSpeakingRef.current) {
+              geminiAiSpeakingRef.current = true
+              if (!isManualMode) {
+                if (handsFreeStream) {
+                  handsFreeStream.getAudioTracks().forEach((t) => {
+                    t.enabled = false
+                  })
+                }
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'audio_stream_end' }))
+                }
+                // Show spoken user question bubble immediately BEFORE the streaming answer!
+                const spokenUser = geminiUserBufRef.current.trim()
+                if (spokenUser && !geminiUserCommittedRef.current) {
+                  geminiUserCommittedRef.current = true
+                  appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: spokenUser })
+                  setInput('')
+                }
+              }
+            }
+            geminiAiBufRef.current += msg.text
+            setStreamingReplyText(geminiAiBufRef.current)
+          } else if (msg.type === 'audio' && msg.data) {
+            if (!geminiAiSpeakingRef.current) {
+              geminiAiSpeakingRef.current = true
+              if (!isManualMode) {
+                if (handsFreeStream) {
+                  handsFreeStream.getAudioTracks().forEach((t) => {
+                    t.enabled = false
+                  })
+                }
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'audio_stream_end' }))
+                }
+                const spokenUser = geminiUserBufRef.current.trim()
+                if (spokenUser && !geminiUserCommittedRef.current) {
+                  geminiUserCommittedRef.current = true
+                  appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: spokenUser })
+                  setInput('')
+                }
+              }
+            }
+            const pCtx = geminiPlayCtxRef.current
+            if (pCtx && pCtx.state !== 'closed') {
+              if (pCtx.state === 'suspended') {
+                pCtx.resume().catch(() => {})
+              }
+              const float32 = base64Pcm24kToFloat32(msg.data)
+              const audioBuf = pCtx.createBuffer(1, float32.length, 24000)
+              audioBuf.getChannelData(0).set(float32)
+              const srcNode = pCtx.createBufferSource()
+              srcNode.buffer = audioBuf
+              srcNode.connect(pCtx.destination)
+              const startAt = Math.max(pCtx.currentTime, geminiNextPlayTimeRef.current)
+              srcNode.start(startAt)
+              geminiNextPlayTimeRef.current = startAt + audioBuf.duration
+              geminiActiveSourcesRef.current.push(srcNode)
+              srcNode.onended = () => {
+                geminiActiveSourcesRef.current = geminiActiveSourcesRef.current.filter(
+                  (n) => n !== srcNode
+                )
+              }
+              setIsAiSpeaking(true)
+              if (geminiSpeakingTimerRef.current) {
+                window.clearTimeout(geminiSpeakingTimerRef.current)
+              }
+              const remainMs = Math.max(150, (geminiNextPlayTimeRef.current - pCtx.currentTime) * 1000 + 180)
+              geminiSpeakingTimerRef.current = window.setTimeout(() => {
+                geminiSpeakingTimerRef.current = null
+                geminiAiSpeakingRef.current = false
+                geminiEchoTailUntilRef.current = Date.now() + 700
+                geminiLastVoiceActivityRef.current = 0
+                setIsAiSpeaking(false)
+                if (isManualMode) {
+                  isRespondingRef.current = false
+                  setIsStreamingVoiceReply(false)
+                  if (voiceActiveRef.current) {
+                    resumeDictationAfterAiRef.current()
+                  }
+                } else if (voiceActiveRef.current && mediaStreamRef.current) {
+                  mediaStreamRef.current.getAudioTracks().forEach((t) => {
+                    t.enabled = true
+                  })
+                }
+              }, remainMs)
+            }
+          } else if (msg.type === 'interrupted') {
+            stopGeminiLivePlayback()
+          } else if (msg.type === 'turn_complete') {
+            if (!geminiSpeakingTimerRef.current) {
+              geminiAiSpeakingRef.current = false
+              geminiEchoTailUntilRef.current = Date.now() + 700
+              geminiLastVoiceActivityRef.current = 0
+              if (isManualMode) {
+                isRespondingRef.current = false
+                setIsStreamingVoiceReply(false)
+                if (voiceActiveRef.current) {
+                  resumeDictationAfterAiRef.current()
+                }
+              } else if (voiceActiveRef.current && mediaStreamRef.current) {
+                mediaStreamRef.current.getAudioTracks().forEach((t) => {
+                  t.enabled = true
+                })
+              }
+            }
+            const userText = geminiUserBufRef.current.trim()
+            const alreadyCommitted = geminiUserCommittedRef.current
+            const aiText = geminiAiBufRef.current.trim()
+            geminiUserBufRef.current = ''
+            geminiUserCommittedRef.current = false
+            geminiAiBufRef.current = ''
+            if (!isManualMode) {
+              setInput('')
+            }
+            setStreamingReplyText('')
+            setIsStreamingVoiceReply(false)
+            if (aiText) {
+              if (userText && !alreadyCommitted) {
+                appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: userText })
+              }
+              appendVoiceTurn({ id: `voice-ai-${Date.now() + 1}`, type: 'ai', content: aiText })
+              void persistVoiceTurnToDb(userText || '(Voice message)', aiText)
+            }
+          } else if (msg.type === 'error') {
+            toast.error(`Gemini Live: ${msg.message || 'Connection error'}`)
+            stopGeminiLiveSession()
+          }
+        } catch {
+          // ignore malformed event
+        }
+      }
+
+      ws.onerror = () => {
+        toast.error('Gemini Live WebSocket error — check that the Open Notebook API is running')
+        stopGeminiLiveSession()
+      }
+
+      ws.onclose = () => {
+        if (voiceActiveRef.current) {
+          stopGeminiLiveSession()
+        } else {
+          setGeminiConnecting(false)
+        }
+      }
+    } catch (err: unknown) {
+      setGeminiConnecting(false)
+      toast.error('Gemini Live failed: ' + ((err as Error)?.message || 'Allow microphone permission'))
+      stopGeminiLiveSession()
+    }
+  }, [
+    chat,
+    sources,
+    contextSelections.sources,
+    notebook?.name,
+    startInlineVoiceMode,
+    stopGeminiLivePlayback,
+    stopGeminiLiveSession,
+    appendVoiceTurn,
+    persistVoiceTurnToDb,
+  ])
+
   const stopInlineVoiceMode = useCallback(() => {
     voiceActiveRef.current = false
     isRespondingRef.current = false
     setVoiceModeActive(false)
     stopVoicePlayback()
     stopMicCapture()
-  }, [stopVoicePlayback, stopMicCapture])
+    if (geminiWsRef.current) {
+      stopGeminiLiveSession()
+    }
+  }, [stopVoicePlayback, stopMicCapture, stopGeminiLiveSession])
 
   useEffect(() => {
     return () => {
       voiceActiveRef.current = false
       stopVoicePlayback()
       stopMicCapture()
+      if (geminiWsRef.current) {
+        stopGeminiLiveSession()
+      }
     }
-  }, [stopVoicePlayback, stopMicCapture])
+  }, [stopVoicePlayback, stopMicCapture, stopGeminiLiveSession])
 
   // Pause mic + SpeechRecognition completely while AI speaks so speaker audio NEVER bleeds into the input box
   const pauseDictationForAi = useCallback(() => {
@@ -718,16 +1174,35 @@ export function ChatColumn({
     }, 350)
   }, [])
 
+  useEffect(() => {
+    resumeDictationAfterAiRef.current = resumeDictationAfterAi
+  }, [resumeDictationAfterAi])
+
   const handleToggleVoiceButton = () => {
-    // If AI is currently speaking, clicking interrupts speech & cleanly resumes dictation after echo fades
-    if (isAiSpeaking || isStreamingVoiceReply) {
+    if (geminiConnecting) {
+      stopGeminiLiveSession()
+      return
+    }
+    // If AI is currently speaking (in Local Voice or Gemini Live Press-↑ mode), clicking interrupts speech & resumes dictation
+    if (
+      (engineRef.current !== 'gemini-live' || geminiSendModeRef.current === 'manual') &&
+      (isAiSpeaking || isStreamingVoiceReply)
+    ) {
       stopVoicePlayback()
+      stopGeminiLivePlayback()
       isRespondingRef.current = false
+      setIsStreamingVoiceReply(false)
       resumeDictationAfterAi()
       return
     }
     if (voiceModeActive) {
-      stopInlineVoiceMode()
+      if (geminiWsRef.current) {
+        stopGeminiLiveSession()
+      } else {
+        stopInlineVoiceMode()
+      }
+    } else if (engineRef.current === 'gemini-live') {
+      startGeminiLiveSession()
     } else {
       startInlineVoiceMode()
     }
@@ -1159,8 +1634,57 @@ ${notesText.trim() || 'No notes available.'}
     const trimmed = input.trim()
     if (!trimmed || chat.isSending || isSearchingWeb || isStreamingVoiceReply) return
 
-    // If Voice Mode (blue wavy icon) is ON, stream text live + speak right behind it!
+    // If Voice Mode (blue wavy icon) is ON:
     if (voiceModeActive) {
+      if (
+        engineRef.current === 'gemini-live' &&
+        geminiWsRef.current &&
+        geminiWsRef.current.readyState === WebSocket.OPEN
+      ) {
+        isRespondingRef.current = true
+        setIsStreamingVoiceReply(true)
+        pauseDictationForAi()
+        geminiUserBufRef.current = trimmed
+        geminiUserCommittedRef.current = true
+        geminiAiBufRef.current = ''
+        appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: trimmed })
+        setInput('')
+        committedDictationRef.current = ''
+
+        let payloadText = trimmed
+        if (webSearchEnabled) {
+          setIsSearchingWeb(true)
+          try {
+            const searchRes = await fetch(BRIDGE_SEARCH_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ query: trimmed, num_results: 5, max_characters: 4500 }),
+            })
+            if (searchRes.ok) {
+              const searchData = await searchRes.json()
+              const items = Array.isArray(searchData?.results) ? searchData.results : []
+              if (items.length > 0) {
+                const webBlock = items
+                  .map(
+                    (r: { title?: string; url?: string; text?: string }) =>
+                      `[${r.title || r.url}](${r.url})\n${r.text || ''}`
+                  )
+                  .join('\n\n')
+                payloadText = `LIVE WEB SEARCH RESULTS (EXA):\n${webBlock}\n\nUSER QUESTION: ${trimmed}`
+              }
+            }
+          } catch (err) {
+            console.error('Exa search error in Gemini Live:', err)
+          } finally {
+            setIsSearchingWeb(false)
+          }
+        }
+
+        if (geminiWsRef.current && geminiWsRef.current.readyState === WebSocket.OPEN) {
+          geminiWsRef.current.send(JSON.stringify({ type: 'text', text: payloadText }))
+        }
+        return
+      }
       await handleSendStreamingVoice(trimmed)
       return
     }
@@ -1459,7 +1983,20 @@ ${notesText.trim() || 'No notes available.'}
                       <span className="text-[#8ab4f8]">Speaking...</span>
                       <button
                         type="button"
-                        onClick={stopVoicePlayback}
+                        onClick={() => {
+                          stopVoicePlayback()
+                          stopGeminiLivePlayback()
+                          if (
+                            engineRef.current === 'gemini-live' &&
+                            geminiSendModeRef.current === 'manual'
+                          ) {
+                            isRespondingRef.current = false
+                            setIsStreamingVoiceReply(false)
+                            if (voiceActiveRef.current) {
+                              resumeDictationAfterAi()
+                            }
+                          }
+                        }}
                         className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#1e2026] hover:bg-[#2a2d36] text-[#c4c7c5] transition-colors"
                       >
                         <VolumeX className="h-3 w-3" /> Stop
@@ -1486,7 +2023,84 @@ ${notesText.trim() || 'No notes available.'}
           <div className="max-w-[740px] mx-auto relative" ref={toolsMenuRef}>
             {/* NotebookLM-style Popover above the Sliders Icon */}
             {toolsMenuOpen && (
-              <div className="absolute bottom-full left-0 mb-2.5 w-[260px] rounded-2xl bg-[#1c1d21] border border-[#2f3138] shadow-2xl p-3 space-y-2.5 z-50">
+              <div className="absolute bottom-full left-0 mb-2.5 w-[275px] rounded-2xl bg-[#1c1d21] border border-[#2f3138] shadow-2xl p-3 space-y-2.5 z-50">
+                {/* 2-Option Speech-to-Speech Switcher */}
+                <div className="px-2 py-1 space-y-1.5">
+                  <span className="text-[11px] font-medium text-[#9aa0a6] uppercase tracking-wider block">
+                    Speech-to-Speech
+                  </span>
+                  <div
+                    role="radiogroup"
+                    aria-label="Speech-to-Speech Engine"
+                    className="grid grid-cols-2 gap-1.5"
+                  >
+                    {VOICE_ENGINE_OPTIONS.map((opt) => {
+                      const active = engine === opt.id
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => {
+                            if (voiceModeActive && engine !== opt.id) {
+                              stopInlineVoiceMode()
+                            }
+                            setEngine(opt.id)
+                          }}
+                          className={`py-1.5 px-2 rounded-lg text-[11.5px] font-medium border transition-colors text-center ${
+                            active
+                              ? 'bg-[#8ab4f8] text-[#0e0f12] border-[#8ab4f8]'
+                              : 'bg-[#141518] text-[#c4c7c5] border-[#2f3138] hover:bg-[#26282e]'
+                          }`}
+                        >
+                          {opt.shortLabel}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {engine === 'gemini-live' && (
+                    <div className="pt-1.5 space-y-1">
+                      <span className="text-[10.5px] font-medium text-[#9aa0a6] block">
+                        Gemini Live Input
+                      </span>
+                      <div
+                        role="radiogroup"
+                        aria-label="Gemini Live Input Mode"
+                        className="grid grid-cols-2 gap-1.5"
+                      >
+                        {GEMINI_SEND_MODE_OPTIONS.map((modeOpt) => {
+                          const active = geminiSendMode === modeOpt.id
+                          return (
+                            <button
+                              key={modeOpt.id}
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              onClick={() => {
+                                if (voiceModeActive && geminiSendMode !== modeOpt.id) {
+                                  stopInlineVoiceMode()
+                                }
+                                setGeminiSendMode(modeOpt.id)
+                              }}
+                              className={`py-1 px-2 rounded-lg text-[11px] font-medium border transition-colors text-center ${
+                                active
+                                  ? 'bg-[#253a5e] text-[#a8c7fa] border-[#8ab4f8]/60'
+                                  : 'bg-[#141518] text-[#9aa0a6] border-[#2f3138] hover:bg-[#26282e] hover:text-[#e8eaed]'
+                              }`}
+                            >
+                              {modeOpt.label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="border-t border-[#2c2e35]" />
+
                 <button
                   type="button"
                   role="switch"
@@ -1607,8 +2221,12 @@ ${notesText.trim() || 'No notes available.'}
                 }}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  voiceModeActive
-                    ? isTranscribingChunk
+                  geminiConnecting
+                    ? 'Connecting to Gemini Live...'
+                    : voiceModeActive
+                    ? engine === 'gemini-live' && geminiSendMode === 'hands-free'
+                      ? 'Gemini Live (Hands-free) — speak naturally, or type and press ↑'
+                      : isTranscribingChunk
                       ? 'Transcribing...'
                       : 'Listening — speak now, then press ↑ to send...'
                     : 'Ask a question or create something'
@@ -1688,11 +2306,19 @@ ${notesText.trim() || 'No notes available.'}
             </div>
 
             <p className="text-center text-[11px] text-[#757a82] mt-2 select-none">
-              {voiceModeActive
-                ? `Voice Mode ON (${resolvedVoiceModel} · ${
-                    engine === 'openai-edge' ? 'Edge Neural' : 'Local Kokoro'
-                  }) — speak into the box and press ↑`
-                : 'Open Notebook can make mistakes, so double-check important details.'}
+              {geminiConnecting
+                ? 'Connecting to Gemini Live...'
+                : voiceModeActive
+                ? engine === 'gemini-live'
+                  ? geminiSendMode === 'hands-free'
+                    ? `Gemini Live ON (Hands-free · ${geminiVoice}) — speak naturally`
+                    : `Gemini Live ON (${geminiVoice}) — speak into the box and press ↑ to send`
+                  : `Local Voice ON (${resolvedVoiceModel} · Kokoro-82M) — speak into the box and press ↑`
+                : `Voice ready: ${
+                    engine === 'gemini-live'
+                      ? `Gemini Live (${geminiSendMode === 'hands-free' ? 'Hands-free' : 'Press ↑ to send'})`
+                      : 'Local Voice + Chat Model'
+                  } · Click the voice icon to talk.`}
             </p>
           </div>
         </div>

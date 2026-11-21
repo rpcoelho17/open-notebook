@@ -161,3 +161,4 @@ history.txt
 
 # Local TTS/STT model weights (Kokoro ONNX)
 models/
+experiments/*.wav

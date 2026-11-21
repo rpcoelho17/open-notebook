@@ -3,7 +3,56 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
-export type VoiceEngine = 'local-kokoro' | 'openai-edge' | 'gemini-live'
+export type VoiceEngine = 'gemini-live' | 'local-kokoro'
+export type GeminiSendMode = 'manual' | 'hands-free'
+
+export const GEMINI_SEND_MODE_OPTIONS: {
+  id: GeminiSendMode
+  label: string
+  description: string
+}[] = [
+  {
+    id: 'manual',
+    label: 'Press ↑ to send',
+    description: 'Dictate into the chat box, edit if needed, then click ↑ for Gemini Live voice reply',
+  },
+  {
+    id: 'hands-free',
+    label: 'Hands-free',
+    description: 'Live voice conversation — Gemini responds automatically when you pause',
+  },
+]
+
+export const VOICE_ENGINE_OPTIONS: {
+  id: VoiceEngine
+  title: string
+  shortLabel: string
+  subtitle: string
+  badge: string
+}[] = [
+  {
+    id: 'gemini-live',
+    title: 'Gemini Live',
+    shortLabel: 'Gemini Live',
+    subtitle: 'Native real-time speech-to-speech via Gemini Live (speak naturally, instant voice replies)',
+    badge: 'Default · Cloud S2S',
+  },
+  {
+    id: 'local-kokoro',
+    title: 'Local Voice + Chat Model',
+    shortLabel: 'Local Voice',
+    subtitle: 'Local Whisper STT + your selected Chat Model (streaming) + local Kokoro-82M voice',
+    badge: 'Local Voice',
+  },
+]
+
+export const GEMINI_LIVE_VOICES = [
+  { id: 'Kore', label: 'Kore (Firm)' },
+  { id: 'Puck', label: 'Puck (Upbeat)' },
+  { id: 'Charon', label: 'Charon (Warm)' },
+  { id: 'Fenrir', label: 'Fenrir (Deep)' },
+  { id: 'Aoede', label: 'Aoede (Breezy)' },
+] as const
 
 export const KOKORO_VOICES = [
   { id: 'af_heart', label: 'Heart (US Female)' },
@@ -37,16 +86,20 @@ export const VOICE_LLM_OPTIONS = [
 
 interface VoiceSettingsState {
   engine: VoiceEngine
+  geminiSendMode: GeminiSendMode
   voiceModel: string
   reasoningEffort: ReasoningEffort
+  geminiVoice: string
   kokoroVoice: string
   edgeVoice: string
   geminiApiKey: string
   webSearchEnabled: boolean
   unreadNoteIds: string[]
   setEngine: (engine: VoiceEngine) => void
+  setGeminiSendMode: (mode: GeminiSendMode) => void
   setVoiceModel: (model: string) => void
   setReasoningEffort: (effort: ReasoningEffort) => void
+  setGeminiVoice: (voice: string) => void
   setKokoroVoice: (voice: string) => void
   setEdgeVoice: (voice: string) => void
   setGeminiApiKey: (key: string) => void
@@ -58,15 +111,18 @@ interface VoiceSettingsState {
 export const useVoiceSettingsStore = create<VoiceSettingsState>()(
   persist(
     (set) => ({
-      engine: 'local-kokoro',
+      engine: 'gemini-live',
+      geminiSendMode: 'manual',
       voiceModel: 'match-chat',
       reasoningEffort: 'none',
+      geminiVoice: 'Kore',
       kokoroVoice: 'af_heart',
       edgeVoice: 'en-US-AvaMultilingualNeural',
       geminiApiKey: '',
       webSearchEnabled: false,
       unreadNoteIds: [],
       setEngine: (engine) => set({ engine }),
+      setGeminiSendMode: (geminiSendMode) => set({ geminiSendMode }),
       setVoiceModel: (voiceModel) => set({ voiceModel }),
       setReasoningEffort: (reasoningEffort) => {
         if (typeof window !== 'undefined') {
@@ -78,6 +134,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         }
         set({ reasoningEffort })
       },
+      setGeminiVoice: (geminiVoice) => set({ geminiVoice }),
       setKokoroVoice: (kokoroVoice) => set({ kokoroVoice }),
       setEdgeVoice: (edgeVoice) => set({ edgeVoice }),
       setGeminiApiKey: (geminiApiKey) => {
@@ -100,6 +157,19 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     }),
     {
       name: 'open-notebook-voice-settings',
+      version: 3,
+      migrate: (persistedState: unknown, version: number) => {
+        const state = (persistedState as Record<string, unknown>) || {}
+        const nextEngine =
+          state.engine === 'local-kokoro' ? 'local-kokoro' : 'gemini-live'
+        return {
+          ...state,
+          engine: version < 2 ? 'gemini-live' : nextEngine,
+          geminiVoice: (state.geminiVoice as string) || 'Kore',
+          geminiSendMode:
+            state.geminiSendMode === 'hands-free' ? 'hands-free' : 'manual',
+        }
+      },
     }
   )
 )

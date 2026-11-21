@@ -847,8 +847,6 @@ ${notesContext.trim() || 'No notes available.'}
   const activeVoiceLabel =
     engine === 'local-kokoro'
       ? `${resolvedVoiceModel} · Kokoro · ${KOKORO_VOICES.find((v) => v.id === kokoroVoice)?.label.split(' ')[0] || 'Heart'}`
-      : engine === 'openai-edge'
-      ? `${resolvedVoiceModel} · Edge · ${EDGE_VOICES.find((v) => v.id === edgeVoice)?.label.split(' ')[0] || 'Ava'}`
       : 'Gemini Live'
 
   const statusText =
