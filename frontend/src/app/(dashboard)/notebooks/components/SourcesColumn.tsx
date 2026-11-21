@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { SourceListResponse } from '@/lib/types/api'
 import {
   DropdownMenu,
@@ -115,6 +115,23 @@ export function SourcesColumn({
     container.addEventListener('scroll', handleScroll)
     return () => container.removeEventListener('scroll', handleScroll)
   }, [handleScroll])
+
+  // Auto-poll while any source is still extracting/embedding so the spinner clears automatically
+  const hasProcessingSources = useMemo(
+    () =>
+      (sources ?? []).some(
+        (s) => s.status === 'running' || s.status === 'queued' || s.status === 'new'
+      ),
+    [sources]
+  )
+
+  useEffect(() => {
+    if (!hasProcessingSources || !onRefresh) return
+    const timer = window.setInterval(() => {
+      onRefresh()
+    }, 2500)
+    return () => window.clearInterval(timer)
+  }, [hasProcessingSources, onRefresh])
 
   const handleDeleteConfirm = async () => {
     if (!sourceToDelete) return
