@@ -61,32 +61,27 @@ export function NotebookHeader({ notebook, onOpenSettings }: NotebookHeaderProps
   return (
     <>
       <header className="h-14 px-4 bg-[#0e0f12] flex items-center justify-between gap-4 flex-shrink-0 select-none">
-        {/* Left: NotebookLM-style arch logo + editable title */}
+        {/* Left: Open Notebook Voice logo (Book + Soundwave) + editable title */}
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <Link
             href="/notebooks"
             title="All Notebooks"
-            className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-[#1e1f22] transition-colors shrink-0"
+            className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-[#1e1f22] transition-colors shrink-0 text-[#8ab4f8]"
           >
-            <svg viewBox="0 0 28 28" className="h-6 w-6" fill="none">
-              <path
-                d="M4 19C4 12.925 8.477 8 14 8C19.523 8 24 12.925 24 19"
-                stroke="#8ab4f8"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-              />
-              <path
-                d="M8.2 19C8.2 15.2 10.797 12.1 14 12.1C17.203 12.1 19.8 15.2 19.8 19"
-                stroke="#c58af9"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-              />
-              <path
-                d="M12.2 19C12.2 17.5 13 16.4 14 16.4C15 16.4 15.8 17.5 15.8 19"
-                stroke="#e8eaed"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-              />
+            <svg
+              viewBox="0 0 24 24"
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H17a1 1 0 0 1 1 1v4" />
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H13" />
+              <path d="M15 11v6" stroke="#a8c7fa" />
+              <path d="M18 9v10" stroke="#60a5fa" />
+              <path d="M21 12v4" stroke="#a8c7fa" />
             </svg>
           </Link>
 

@@ -16,11 +16,18 @@ export function GeminiLiveIcon({ className = 'h-5 w-5', circle = false, ...props
         {...props}
       >
         <circle cx="16" cy="16" r="15" fill="currentColor" />
-        <g fill="var(--background, #000)">
-          <rect x="9.5" y="13" width="2.5" height="9" rx="1.25" />
-          <rect x="14.75" y="10" width="2.5" height="15" rx="1.25" />
-          <rect x="20" y="14.5" width="2.5" height="6" rx="1.25" />
-          <path d="M22.5 5 Q22.5 9.5 27 9.5 Q22.5 9.5 22.5 14 Q22.5 9.5 18 9.5 Q22.5 9.5 22.5 5 Z" />
+        <g
+          stroke="var(--background, #000)"
+          strokeWidth="2.1"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M8 14.5v3" />
+          <path d="M11.2 11.5v9" />
+          <path d="M14.4 9v14" />
+          <path d="M17.6 13v6" />
+          <path d="M20.8 10.5v11" />
+          <path d="M24 14.5v3" />
         </g>
       </svg>
     )
@@ -29,17 +36,22 @@ export function GeminiLiveIcon({ className = 'h-5 w-5', circle = false, ...props
   return (
     <svg
       viewBox="0 0 24 24"
-      fill="currentColor"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.1"
+      strokeLinecap="round"
+      strokeLinejoin="round"
       className={className}
       xmlns="http://www.w3.org/2000/svg"
       {...props}
     >
-      {/* Waveform bars */}
-      <rect x="6.5" y="10" width="2.2" height="7" rx="1.1" />
-      <rect x="10.9" y="7.5" width="2.2" height="12" rx="1.1" />
-      <rect x="15.3" y="11" width="2.2" height="5" rx="1.1" />
-      {/* Gemini 4-pointed Sparkle */}
-      <path d="M17.5 3.5 Q17.5 7 21 7 Q17.5 7 17.5 10.5 Q17.5 7 14 7 Q17.5 7 17.5 3.5 Z" />
+      {/* Clean AudioLines waveform */}
+      <path d="M2 10v3" />
+      <path d="M6 6v11" />
+      <path d="M10 3v18" />
+      <path d="M14 8v7" />
+      <path d="M18 5v13" />
+      <path d="M22 10v3" />
     </svg>
   )
 }
