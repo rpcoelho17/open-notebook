@@ -38,6 +38,7 @@ import {
   MessageSquare,
   Volume2,
   VolumeX,
+  Trash2,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -236,10 +237,11 @@ export function ChatColumn({
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false)
   const lastSummaryKeyRef = useRef<string>('')
 
-  // Per-message Save / Copy / Read Aloud UI feedback
+  // Per-message Save / Copy / Read Aloud / Delete UI feedback
   const [savingId, setSavingId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [readingId, setReadingId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   // Inline Voice Refs
   const voiceActiveRef = useRef(false)
@@ -1296,9 +1298,13 @@ ${notesText.trim() || 'No notes available.'}
     generateOverviewSummary(false)
   }, [notebookId, readySourcesKey, sourcesLoading, generateOverviewSummary])
 
-  // Auto-scroll when messages or streaming text updates
+  // Auto-scroll ONLY when new messages are added or streaming text updates (never on deletion!)
+  const prevTotalMessagesRef = useRef(0)
   useEffect(() => {
-    if (chat.messages.length > 0 || voiceTurns.length > 0 || streamingReplyText) {
+    const totalCount = chat.messages.length + voiceTurns.length
+    const prevCount = prevTotalMessagesRef.current
+    prevTotalMessagesRef.current = totalCount
+    if (totalCount > prevCount || streamingReplyText) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [chat.messages.length, voiceTurns.length, streamingReplyText])
@@ -1338,6 +1344,31 @@ ${notesText.trim() || 'No notes available.'}
       setTimeout(() => setCopiedId(null), 1800)
     } catch {
       toast.error('Failed to copy')
+    }
+  }
+
+  // Delete an AI answer from both the chat canvas and Open Notebook's database
+  const handleDeleteMessage = async (messageId: string, content: string) => {
+    if (deletingId) return
+    setDeletingId(messageId)
+    try {
+      // Remove immediately from local optimistic voice turns if present
+      setVoiceTurns((prev) => {
+        const idx = prev.findIndex((m) => m.id === messageId)
+        if (idx === -1) return prev
+        const removeIndices = new Set<number>([idx])
+        if (idx > 0 && prev[idx - 1].type === 'human' && prev[idx - 1].content.trim() === '(Voice message)') {
+          removeIndices.add(idx - 1)
+        }
+        return prev.filter((_, i) => !removeIndices.has(i))
+      })
+
+      const ok = await chat.deleteMessage(messageId, content)
+      if (ok) {
+        toast.success('Message deleted')
+      }
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -1887,7 +1918,21 @@ ${notesText.trim() || 'No notes available.'}
               {allDisplayMessages.map((message, idx) => {
                 if (message.type === 'human') {
                   return (
-                    <div key={message.id} className="flex justify-end">
+                    <div key={message.id} className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMessage(message.id, message.content)}
+                        disabled={deletingId === message.id}
+                        className="h-7 w-7 rounded-full flex items-center justify-center shrink-0 text-[#9aa0a6] hover:text-red-400 hover:bg-[#1e1f24] transition-colors disabled:opacity-50"
+                        title="Delete question from chat & database"
+                        aria-label="Delete question"
+                      >
+                        {deletingId === message.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </button>
                       <div className="max-w-[82%] rounded-2xl bg-[#25262b] border border-[#32343a] px-4 py-2.5 text-[14px] text-[#e8eaed] leading-relaxed">
                         {message.content}
                       </div>
@@ -1958,6 +2003,21 @@ ${notesText.trim() || 'No notes available.'}
                           <VolumeX className="h-3.5 w-3.5" />
                         ) : (
                           <Volume2 className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMessage(message.id, message.content)}
+                        disabled={deletingId === message.id}
+                        className="h-7 w-7 rounded-full flex items-center justify-center text-[#9aa0a6] hover:text-red-400 hover:bg-[#1e1f24] transition-colors disabled:opacity-50"
+                        title="Delete answer from chat & database"
+                        aria-label="Delete answer"
+                      >
+                        {deletingId === message.id ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
                         )}
                       </button>
                     </div>

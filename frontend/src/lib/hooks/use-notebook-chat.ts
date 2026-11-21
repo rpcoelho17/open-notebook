@@ -297,6 +297,45 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     return deleteSessionMutation.mutate(sessionId)
   }, [deleteSessionMutation])
 
+  // Delete an individual chat message from both UI state and the LangGraph SQLite database
+  const deleteMessage = useCallback(
+    async (messageId: string, content?: string): Promise<boolean> => {
+      if (!currentSessionId) return false
+      try {
+        const res = await fetch(
+          `/api/chat/sessions/${encodeURIComponent(currentSessionId)}/messages/delete`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message_id: messageId,
+              content,
+            }),
+          }
+        )
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
+        const data = await res.json()
+        if (Array.isArray(data?.messages)) {
+          setMessages(data.messages)
+        }
+        queryClient.invalidateQueries({
+          queryKey: QUERY_KEYS.notebookChatSession(currentSessionId),
+        })
+        queryClient.invalidateQueries({
+          queryKey: QUERY_KEYS.notebookChatSessions(notebookId),
+        })
+        return true
+      } catch (err) {
+        console.error('Failed to delete message:', err)
+        toast.error('Failed to delete message from database')
+        return false
+      }
+    },
+    [currentSessionId, notebookId, queryClient]
+  )
+
   // Set model override - handles both existing sessions and pending state
   const setModelOverride = useCallback((model: string | null) => {
     if (currentSessionId) {
@@ -340,6 +379,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     createSession,
     updateSession,
     deleteSession,
+    deleteMessage,
     switchSession,
     sendMessage,
     setModelOverride,

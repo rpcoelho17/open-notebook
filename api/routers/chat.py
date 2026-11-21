@@ -405,6 +405,79 @@ class AppendMessagesRequest(BaseModel):
     ai_message: str = Field(..., description="Completed AI response to record")
 
 
+class DeleteMessageRequest(BaseModel):
+    message_id: Optional[str] = Field(None, description="ID of the message to delete")
+    content: Optional[str] = Field(
+        None, description="Fallback content match for optimistic messages"
+    )
+
+
+@router.post("/chat/sessions/{session_id}/messages/delete", response_model=ExecuteChatResponse)
+async def delete_session_message(session_id: str, request: DeleteMessageRequest):
+    """Delete a specific AI/chat message from the session's LangGraph SQLite checkpoint."""
+    try:
+        full_session_id, session = await get_session_or_404(session_id)
+
+        from langchain_core.messages import RemoveMessage
+        from open_notebook.utils.text_utils import extract_text_content
+
+        config = RunnableConfig(configurable={"thread_id": full_session_id})
+        thread_state = await asyncio.to_thread(chat_graph.get_state, config=config)
+        raw_messages = (
+            list(thread_state.values.get("messages", []))
+            if thread_state and thread_state.values
+            else []
+        )
+
+        target_idx: Optional[int] = None
+        if request.message_id:
+            for i, m in enumerate(raw_messages):
+                if str(getattr(m, "id", "")) == request.message_id:
+                    target_idx = i
+                    break
+
+        if target_idx is None and request.content:
+            wanted = request.content.strip()
+            for i in range(len(raw_messages) - 1, -1, -1):
+                m = raw_messages[i]
+                m_content = extract_text_content(getattr(m, "content", "")).strip()
+                if m_content == wanted:
+                    target_idx = i
+                    break
+
+        if target_idx is not None:
+            target_msg = raw_messages[target_idx]
+            target_id = getattr(target_msg, "id", None)
+            removals = []
+            if target_id:
+                removals.append(RemoveMessage(id=target_id))
+            # Clean up any orphaned phantom "(Voice message)" placeholder right before an AI answer
+            if getattr(target_msg, "type", "") == "ai" and target_idx > 0:
+                prev_msg = raw_messages[target_idx - 1]
+                prev_type = getattr(prev_msg, "type", "")
+                prev_content = extract_text_content(getattr(prev_msg, "content", "")).strip()
+                prev_id = getattr(prev_msg, "id", None)
+                if prev_type == "human" and prev_content == "(Voice message)" and prev_id:
+                    removals.append(RemoveMessage(id=prev_id))
+            if removals:
+                await asyncio.to_thread(chat_graph.update_state, config, {"messages": removals})
+                await session.save()
+
+        updated_state = await asyncio.to_thread(chat_graph.get_state, config=config)
+        messages: list[ChatMessage] = []
+        if updated_state and updated_state.values and "messages" in updated_state.values:
+            messages = extract_chat_messages(updated_state.values["messages"])
+
+        return ExecuteChatResponse(session_id=session_id, messages=messages)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting message from session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting message: {str(e)}")
+
+
 @router.post("/chat/sessions/{session_id}/append", response_model=ExecuteChatResponse)
 async def append_session_messages(session_id: str, request: AppendMessagesRequest):
     """Record a completed streaming/voice Q&A turn directly into the chat session database."""
