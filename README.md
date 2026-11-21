@@ -6,7 +6,7 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <img src="docs/assets/voice-logo.svg" alt="Open Notebook Voice Edition Logo" width="184" height="96">
+  <img src="docs/assets/voice-hero-logo.svg" alt="Open Notebook Voice Edition Logo" width="184" height="96">
 
   <h2 align="center">Open Notebook — Voice Edition</h2>
 
