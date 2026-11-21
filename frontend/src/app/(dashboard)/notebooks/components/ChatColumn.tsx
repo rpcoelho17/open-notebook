@@ -263,22 +263,47 @@ export function ChatColumn({
     setVoiceTurns((prev) => [...prev, turn])
   }, [])
 
-  // Fire-and-forget async database persistence so voice playback is NEVER blocked
+  // Fire-and-forget async database persistence via same-origin Next.js /api proxy + keepalive
+  // (zero CORS preflight, survives immediate page refresh, never blocks voice playback!)
   const persistVoiceTurnToDb = useCallback(
     async (question: string, answer: string) => {
       try {
         let sessionId = chat.currentSessionId
         if (!sessionId) {
           const title = question.length > 36 ? `${question.slice(0, 36)}...` : question
-          const created = await chatApi.createSession({
-            notebook_id: notebookId,
-            title: title || 'Voice Chat',
+          const createRes = await fetch('/api/chat/sessions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              notebook_id: notebookId,
+              title: title || 'Voice Chat',
+            }),
+            keepalive: true,
           })
+          if (!createRes.ok) throw new Error(`Create session HTTP ${createRes.status}`)
+          const created = await createRes.json()
           sessionId = created.id
         }
-        await chatApi.appendMessages(sessionId, question, answer)
+        if (!sessionId) return
+
+        const appendRes = await fetch(
+          `/api/chat/sessions/${encodeURIComponent(sessionId)}/append`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              user_message: question,
+              ai_message: answer,
+            }),
+            keepalive: true,
+          }
+        )
+        if (!appendRes.ok) {
+          throw new Error(`Append HTTP ${appendRes.status}`)
+        }
       } catch (err) {
         console.error('Failed to persist voice turn to database:', err)
+        toast.error('Could not save voice turn to database')
       }
     },
     [chat.currentSessionId, notebookId]
