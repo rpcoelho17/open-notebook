@@ -56,6 +56,18 @@ export function RecentlyViewed({ limit = 12 }: RecentlyViewedProps) {
     return null
   }
 
+  // On the Notebooks page, show only unique recently viewed notebooks (not individual sources from inside them)
+  const seenIds = new Set<string>()
+  const uniqueNotebooks = items.filter((item) => {
+    if (item.type !== 'notebook' || seenIds.has(item.id)) return false
+    seenIds.add(item.id)
+    return true
+  })
+
+  if (uniqueNotebooks.length === 0) {
+    return null
+  }
+
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen} className="space-y-4">
       <div className="flex items-center gap-2">
@@ -76,12 +88,12 @@ export function RecentlyViewed({ limit = 12 }: RecentlyViewedProps) {
         <h2 className="font-display text-lg font-semibold tracking-tight">
           {t('notebooks.recentlyViewed', { defaultValue: 'Recently Viewed' })}
         </h2>
-        <span className="text-sm text-muted-foreground">({items.length})</span>
+        <span className="text-sm text-muted-foreground">({uniqueNotebooks.length})</span>
       </div>
 
       <CollapsibleContent>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {items.map((item) => {
+          {uniqueNotebooks.map((item) => {
             const Icon = item.type === 'notebook' ? BookOpen : FileText
             const typeLabel =
               item.type === 'notebook'
