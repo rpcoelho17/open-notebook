@@ -84,11 +84,32 @@ export const VOICE_LLM_OPTIONS = [
   { id: 'gpt-6.2-astra', label: 'gpt-6.2-astra' },
 ] as const
 
+export const MIN_CONTEXT_WINDOW_TOKENS = 8000
+
+export function getModelMaxContextTokens(modelName: string): number {
+  const m = (modelName || '').toLowerCase()
+  if (m.includes('gemini-2.5') || m.includes('gemini-3') || m.includes('gemini-4')) {
+    return 1000000
+  }
+  if (m.includes('gpt-6.1-terra') || m.includes('gpt-6.2-sol') || m.includes('gpt-6.1-sol')) {
+    return 500000
+  }
+  if (m.includes('gpt-6') || m.includes('gpt-5.6') || m.includes('gpt-reserve')) {
+    return 272000
+  }
+  if (m.includes('claude')) {
+    return 200000
+  }
+  return 128000
+}
+
 interface VoiceSettingsState {
   engine: VoiceEngine
   geminiSendMode: GeminiSendMode
   voiceModel: string
   reasoningEffort: ReasoningEffort
+  /** null means "use maximum context window supported by the chosen model" */
+  contextWindowTokens: number | null
   geminiVoice: string
   kokoroVoice: string
   edgeVoice: string
@@ -99,6 +120,7 @@ interface VoiceSettingsState {
   setGeminiSendMode: (mode: GeminiSendMode) => void
   setVoiceModel: (model: string) => void
   setReasoningEffort: (effort: ReasoningEffort) => void
+  setContextWindowTokens: (tokens: number | null) => void
   setGeminiVoice: (voice: string) => void
   setKokoroVoice: (voice: string) => void
   setEdgeVoice: (voice: string) => void
@@ -115,6 +137,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       geminiSendMode: 'manual',
       voiceModel: 'match-chat',
       reasoningEffort: 'none',
+      contextWindowTokens: null,
       geminiVoice: 'Kore',
       kokoroVoice: 'af_heart',
       edgeVoice: 'en-US-AvaMultilingualNeural',
@@ -133,6 +156,16 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           }).catch(() => {})
         }
         set({ reasoningEffort })
+      },
+      setContextWindowTokens: (contextWindowTokens) => {
+        if (typeof window !== 'undefined') {
+          fetch('http://127.0.0.1:8088/v1/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ max_context_tokens: contextWindowTokens }),
+          }).catch(() => {})
+        }
+        set({ contextWindowTokens })
       },
       setGeminiVoice: (geminiVoice) => set({ geminiVoice }),
       setKokoroVoice: (kokoroVoice) => set({ kokoroVoice }),

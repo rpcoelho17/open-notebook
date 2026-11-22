@@ -19,6 +19,8 @@ import {
   KOKORO_VOICES,
   VOICE_LLM_OPTIONS,
   REASONING_EFFORT_OPTIONS,
+  MIN_CONTEXT_WINDOW_TOKENS,
+  getModelMaxContextTokens,
 } from '@/lib/stores/voice-settings-store'
 import {
   useModels,
@@ -38,12 +40,14 @@ export function NotebookSettingsDialog({ open, onOpenChange }: NotebookSettingsD
     geminiSendMode,
     voiceModel,
     reasoningEffort,
+    contextWindowTokens,
     geminiVoice,
     kokoroVoice,
     setEngine,
     setGeminiSendMode,
     setVoiceModel,
     setReasoningEffort,
+    setContextWindowTokens,
     setGeminiVoice,
     setKokoroVoice,
   } = useVoiceSettingsStore()
@@ -70,6 +74,12 @@ export function NotebookSettingsDialog({ open, onOpenChange }: NotebookSettingsD
   const activeChatModelId = modelDefaults?.default_chat_model || ''
   const activeChatModelName =
     chatModels.find((m) => m.id === activeChatModelId)?.name || 'gpt-6-luna'
+  const modelMaxTokens = getModelMaxContextTokens(activeChatModelName)
+  const effectiveContextTokens = Math.min(
+    modelMaxTokens,
+    Math.max(MIN_CONTEXT_WINDOW_TOKENS, contextWindowTokens ?? modelMaxTokens)
+  )
+  const isMaxContext = effectiveContextTokens >= modelMaxTokens
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -254,33 +264,81 @@ export function NotebookSettingsDialog({ open, onOpenChange }: NotebookSettingsD
             </div>
           )}
 
-          {/* Chat Model Quick Switcher */}
+          {/* Chat Model Quick Switcher + Context Window Slider */}
           {chatModels.length > 0 && (
-            <div className="space-y-2 pt-1 border-t border-[#2b2d32]">
-              <Label className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider flex items-center gap-1.5 pt-2">
-                <Bot className="h-3.5 w-3.5" /> Default Chat Model
-              </Label>
-              <div className="flex flex-wrap gap-2">
-                {chatModels.map((m) => {
-                  const active = m.id === activeChatModelId
-                  return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      disabled={updateModelDefaults.isPending}
-                      onClick={() =>
-                        updateModelDefaults.mutate({ default_chat_model: m.id })
-                      }
-                      className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
-                        active
-                          ? 'bg-[#8ab4f8] text-[#0e0f12] font-medium border-[#8ab4f8]'
-                          : 'bg-[#141518] text-[#c4c7c5] border-[#2f3136] hover:bg-[#25262b]'
-                      }`}
-                    >
-                      {m.name}
-                    </button>
-                  )
-                })}
+            <div className="space-y-3 pt-1 border-t border-[#2b2d32]">
+              <div className="space-y-2">
+                <Label className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider flex items-center gap-1.5 pt-2">
+                  <Bot className="h-3.5 w-3.5" /> Default Chat Model
+                </Label>
+                <div className="flex flex-wrap gap-2">
+                  {chatModels.map((m) => {
+                    const active = m.id === activeChatModelId
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        disabled={updateModelDefaults.isPending}
+                        onClick={() => {
+                          updateModelDefaults.mutate({ default_chat_model: m.id })
+                          // Reset context window to the newly chosen model's maximum by default
+                          setContextWindowTokens(null)
+                        }}
+                        className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                          active
+                            ? 'bg-[#8ab4f8] text-[#0e0f12] font-medium border-[#8ab4f8]'
+                            : 'bg-[#141518] text-[#c4c7c5] border-[#2f3136] hover:bg-[#25262b]'
+                        }`}
+                      >
+                        {m.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Context Window Slider (8,000 tokens -> selected model's maximum; defaults to Max) */}
+              <div className="space-y-1.5 p-3 rounded-xl bg-[#141518] border border-[#2b2d32]">
+                <div className="flex items-center justify-between text-xs">
+                  <Label
+                    htmlFor="context-window-slider"
+                    className="text-xs font-medium text-[#c4c7c5]"
+                  >
+                    Context Window ({activeChatModelName})
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11.5px] text-[#8ab4f8]">
+                      {effectiveContextTokens.toLocaleString()} tokens
+                      {isMaxContext ? ' (Max)' : ''}
+                    </span>
+                    {!isMaxContext && (
+                      <button
+                        type="button"
+                        onClick={() => setContextWindowTokens(null)}
+                        className="text-[11px] text-[#9aa0a6] hover:text-[#e8eaed] underline"
+                      >
+                        Max
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  id="context-window-slider"
+                  type="range"
+                  min={MIN_CONTEXT_WINDOW_TOKENS}
+                  max={modelMaxTokens}
+                  step={8000}
+                  value={effectiveContextTokens}
+                  onChange={(e) => {
+                    const val = Number(e.target.value)
+                    setContextWindowTokens(val >= modelMaxTokens ? null : val)
+                  }}
+                  className="w-full accent-[#8ab4f8] cursor-pointer"
+                />
+                <div className="flex items-center justify-between text-[10.5px] text-[#80868b] font-mono">
+                  <span>{MIN_CONTEXT_WINDOW_TOKENS.toLocaleString()}</span>
+                  <span>{modelMaxTokens.toLocaleString()} max</span>
+                </div>
               </div>
             </div>
           )}

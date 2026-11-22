@@ -6,7 +6,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Matches the file-size guidance already documented in
 # docs/3-USER-GUIDE/adding-sources.md ("Very large files (>100MB) - Timeout").
-DEFAULT_MAX_UPLOAD_SIZE_MB = 100
+DEFAULT_MAX_UPLOAD_SIZE_MB = 200
 
 
 def get_max_upload_size_bytes() -> int:

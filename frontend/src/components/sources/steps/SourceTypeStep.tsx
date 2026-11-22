@@ -245,13 +245,30 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
                           </Badge>
                         )}
                       </div>
-                      <Input
-                        id="file"
-                        type="file"
-                        multiple
-                        {...register('file')}
-                        accept=".pdf,.doc,.docx,.pptx,.ppt,.xlsx,.xls,.odt,.ods,.odp,.txt,.md,.epub,.mp4,.avi,.mov,.wmv,.mp3,.wav,.m4a,.aac,.jpg,.jpeg,.png,.tiff,.html,.htm"
-                      />
+                      <div className="relative">
+                        <input
+                          id="file"
+                          type="file"
+                          multiple
+                          {...register('file')}
+                          accept=".pdf,.doc,.docx,.pptx,.ppt,.xlsx,.xls,.odt,.ods,.odp,.txt,.md,.epub,.mp4,.avi,.mov,.wmv,.mp3,.wav,.m4a,.aac,.jpg,.jpeg,.png,.tiff,.html,.htm"
+                          className="peer sr-only"
+                        />
+                        <label
+                          htmlFor="file"
+                          className="flex h-10 w-full cursor-pointer items-center rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background transition-colors hover:bg-accent/40 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2"
+                        >
+                          {fileCount === 1 && fileInput instanceof FileList ? (
+                            <span className="truncate text-foreground">{fileInput[0].name}</span>
+                          ) : fileCount > 1 ? (
+                            <span className="truncate text-foreground">
+                              {t('sources.filesCount', { count: fileCount })}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">Choose file(s)...</span>
+                          )}
+                        </label>
+                      </div>
                       <p className="text-xs text-muted-foreground mt-1">
                         {t('sources.selectMultipleFilesHint')}
                       </p>

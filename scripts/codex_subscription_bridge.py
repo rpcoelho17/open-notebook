@@ -80,6 +80,8 @@ def get_kokoro_model():
 DEFAULT_PORT = 8088
 DEFAULT_MODEL = "gpt-6.2-sol"
 DEFAULT_REASONING_EFFORT = os.environ.get("CODEX_REASONING_EFFORT", "none")
+DEFAULT_MAX_CONTEXT_TOKENS = None  # None = model max (capped to Codex's 1M-char transport limit)
+CODEX_HARD_MAX_CHARS = 980_000
 GEMINI_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
@@ -393,7 +395,7 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        global DEFAULT_REASONING_EFFORT
+        global DEFAULT_REASONING_EFFORT, DEFAULT_MAX_CONTEXT_TOKENS
         path = self.path.split("?")[0].rstrip("/")
         if path in ("/v1/audio/transcriptions", "/audio/transcriptions"):
             self._handle_transcription()
@@ -412,7 +414,20 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                 if eff in ("none", "low", "medium", "high"):
                     DEFAULT_REASONING_EFFORT = eff
                     print(f"[Codex Bridge] Default reasoning_effort updated to: {DEFAULT_REASONING_EFFORT}")
-                body = json.dumps({"status": "ok", "reasoning_effort": DEFAULT_REASONING_EFFORT}).encode()
+                if "max_context_tokens" in cfg:
+                    raw_tok = cfg.get("max_context_tokens")
+                    if raw_tok is None:
+                        DEFAULT_MAX_CONTEXT_TOKENS = None
+                    else:
+                        tok_int = int(raw_tok)
+                        if tok_int >= 8000:
+                            DEFAULT_MAX_CONTEXT_TOKENS = tok_int
+                    print(f"[Codex Bridge] Default max_context_tokens updated to: {DEFAULT_MAX_CONTEXT_TOKENS}")
+                body = json.dumps({
+                    "status": "ok",
+                    "reasoning_effort": DEFAULT_REASONING_EFFORT,
+                    "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
+                }).encode()
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
@@ -471,6 +486,20 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
 
         prompt_parts.append("[Assistant]")
         final_prompt = "\n\n".join(prompt_parts)
+        # Respect configured context window slider (and Codex's hard 1M-char transport cap)
+        # while always preserving the user's latest question at the tail of the prompt.
+        req_max_tokens = req.get("max_context_tokens") or DEFAULT_MAX_CONTEXT_TOKENS
+        budget_chars = CODEX_HARD_MAX_CHARS
+        if isinstance(req_max_tokens, (int, float)) and req_max_tokens >= 8000:
+            budget_chars = min(int(req_max_tokens * 4), CODEX_HARD_MAX_CHARS)
+        if len(final_prompt) > budget_chars:
+            tail_keep = min(16000, budget_chars // 4)
+            head_keep = max(4000, budget_chars - tail_keep - 120)
+            final_prompt = (
+                final_prompt[:head_keep]
+                + "\n\n[...middle source text trimmed to fit configured context window...]\n\n"
+                + final_prompt[-tail_keep:]
+            )
 
         # Route Gemini models to @google/gemini-cli (OAuth subscription), GPT models to Codex app-server
         effort = req.get("reasoning_effort") or DEFAULT_REASONING_EFFORT
