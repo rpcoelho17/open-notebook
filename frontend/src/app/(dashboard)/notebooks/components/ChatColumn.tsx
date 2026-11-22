@@ -281,6 +281,9 @@ export function ChatColumn({
   const geminiEchoTailUntilRef = useRef(0)
   const geminiLastVoiceActivityRef = useRef(0)
   const resumeDictationAfterAiRef = useRef<() => void>(() => {})
+  const sourceTextCacheRef = useRef<
+    Record<string, { title: string; text: string; fullLen: number; isLarge: boolean }>
+  >({})
   const [geminiConnecting, setGeminiConnecting] = useState(false)
 
   useEffect(() => {
@@ -801,6 +804,115 @@ export function ChatColumn({
     setMicLevel(0)
   }, [stopGeminiLivePlayback, stopMicCapture, appendVoiceTurn, persistVoiceTurnToDb])
 
+  // Fetch and cache source text metadata: full text for short articles (<= 35k chars),
+  // opening Table of Contents (12k chars) for massive textbooks (> 35k chars).
+  const loadCheckedSourceSummaries = useCallback(async () => {
+    const checkedSources = sources.filter(
+      (s) => (contextSelections.sources[s.id] ?? 'off') !== 'off'
+    )
+    const entries = await Promise.all(
+      checkedSources.map(async (s) => {
+        const cached = sourceTextCacheRef.current[s.id]
+        if (cached) return cached
+        try {
+          const res = await fetch(`/api/sources/${encodeURIComponent(s.id)}`)
+          if (res.ok) {
+            const detail = await res.json()
+            const raw = String(detail.full_text || detail.content || '')
+            const isLarge = raw.length > 35000
+            const entry = {
+              title: String(detail.title || s.title || s.id),
+              text: isLarge ? raw.slice(0, 12000) : raw,
+              fullLen: raw.length,
+              isLarge,
+            }
+            sourceTextCacheRef.current[s.id] = entry
+            return entry
+          }
+        } catch {
+          // ignore
+        }
+        return {
+          title: String(s.title || s.id),
+          text: '',
+          fullLen: 0,
+          isLarge: false,
+        }
+      })
+    )
+    return entries
+  }, [sources, contextSelections.sources])
+
+  // Hybrid Vector RAG lookup strictly scoped to the active notebook's checked sources & notes
+  const retrieveNotebookRagBlock = useCallback(
+    async (question: string, maxChars = 55000, signal?: AbortSignal): Promise<string> => {
+      const checkedSources = sources.filter(
+        (s) => (contextSelections.sources[s.id] ?? 'off') !== 'off'
+      )
+      if (checkedSources.length === 0) return ''
+
+      const allowedParentIds = new Set<string>([
+        ...checkedSources.map((s) => s.id),
+        ...notes.map((n) => n.id),
+      ])
+
+      try {
+        const res = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: question,
+            type: 'vector',
+            limit: 25,
+            search_sources: true,
+            search_notes: true,
+            minimum_score: 0.2,
+            scope_notebook_ids: [notebookId],
+          }),
+          signal,
+        })
+        if (!res.ok) return ''
+        const data = await res.json()
+        const rawResults = Array.isArray(data?.results) ? data.results : []
+
+        const scoped = rawResults.filter((item: Record<string, unknown>) => {
+          const pid = String(item.parent_id || '')
+          const id = String(item.id || '')
+          return allowedParentIds.has(pid) || allowedParentIds.has(id)
+        })
+        if (scoped.length === 0) return ''
+
+        const blocks: string[] = []
+        let used = 0
+        for (const item of scoped) {
+          const title = String(item.title || item.parent_id || 'Source')
+          const sim = typeof item.similarity === 'number' ? item.similarity.toFixed(3) : 'n/a'
+          const rawMatches = item.matches ?? item.content ?? ''
+          const body = Array.isArray(rawMatches)
+            ? rawMatches.map((m) => String(m)).join('\n\n')
+            : String(rawMatches)
+          if (!body.trim()) continue
+          const chunk = `[Retrieved from: ${title} | similarity=${sim}]\n${body}`
+          if (used + chunk.length > maxChars) {
+            const remaining = maxChars - used
+            if (remaining > 400) {
+              blocks.push(chunk.slice(0, remaining))
+            }
+            break
+          }
+          blocks.push(chunk)
+          used += chunk.length
+        }
+        return blocks.join('\n\n')
+      } catch (err) {
+        if ((err as { name?: string })?.name === 'AbortError') throw err
+        console.error('Hybrid Vector RAG search error:', err)
+        return ''
+      }
+    },
+    [sources, contextSelections.sources, notes, notebookId]
+  )
+
   const startGeminiLiveSession = useCallback(async () => {
     const isManualMode = geminiSendModeRef.current === 'manual'
     setGeminiConnecting(true)
@@ -817,28 +929,17 @@ export function ChatColumn({
         mediaStreamRef.current = handsFreeStream
       }
 
-      // Fetch FULL text of every checked source so Gemini Live has every detail (not just short insights!)
-      const checkedSources = sources.filter(
-        (s) => (contextSelections.sources[s.id] ?? 'off') !== 'off'
-      )
-      const fullSourceBlocks = await Promise.all(
-        checkedSources.map(async (s) => {
-          try {
-            const res = await fetch(`/api/sources/${encodeURIComponent(s.id)}`)
-            if (res.ok) {
-              const detail = await res.json()
-              const body = String(detail.full_text || detail.content || '').slice(0, 35000)
-              if (body.trim()) {
-                return `[Source: ${detail.title || s.title || s.id}]\n${body}`
-              }
-            }
-          } catch {
-            // fall back below
-          }
-          return `[Source: ${s.title || s.id}]\n(No extracted text available)`
-        })
-      )
-      const sourcesText = fullSourceBlocks.join('\n\n')
+      // Hybrid RAG setup: full text for short sources (<=35k), Opening/TOC (12k) for large textbooks
+      const sourceEntries = await loadCheckedSourceSummaries()
+      const sourcesText = sourceEntries
+        .map((e) =>
+          e.text.trim()
+            ? e.isLarge
+              ? `[Source (Table of Contents / Opening of ${e.fullLen.toLocaleString()}-char book): ${e.title}]\n${e.text}`
+              : `[Source: ${e.title}]\n${e.text}`
+            : `[Source: ${e.title}]\n(No extracted text available)`
+        )
+        .join('\n\n')
 
       const ctx = await chat.buildContext()
       const notesText = ((ctx?.notes as Array<Record<string, unknown>>) || [])
@@ -1096,8 +1197,7 @@ ${notesText.trim() || 'No notes available.'}
     }
   }, [
     chat,
-    sources,
-    contextSelections.sources,
+    loadCheckedSourceSummaries,
     notebook?.name,
     startInlineVoiceMode,
     stopGeminiLivePlayback,
@@ -1442,14 +1542,19 @@ ${notesText.trim() || 'No notes available.'}
     ttsAbortRef.current = turnAbort
 
     try {
-      // 1. Build notebook context
-      const ctx = await chat.buildContext()
-      const sourcesText = ((ctx?.sources as Array<Record<string, unknown>>) || [])
-        .map(
-          (s) =>
-            `[Source: ${s.title || s.name || s.id || 'Untitled'}]\n${
-              s.content || s.full_text || s.text || JSON.stringify(s)
-            }`
+      // 1. Build Hybrid RAG notebook context (full text for short sources, TOC + live vector RAG chunks for large books)
+      const [sourceEntries, ragBlock, ctx] = await Promise.all([
+        loadCheckedSourceSummaries(),
+        retrieveNotebookRagBlock(question, 60000, turnAbort.signal),
+        chat.buildContext(),
+      ])
+      const sourcesText = sourceEntries
+        .map((e) =>
+          e.text.trim()
+            ? e.isLarge
+              ? `[Source (Table of Contents / Opening of ${e.fullLen.toLocaleString()}-char book): ${e.title}]\n${e.text}`
+              : `[Source: ${e.title}]\n${e.text}`
+            : `[Source: ${e.title}]\n(No extracted text available)`
         )
         .join('\n\n')
       const notesText = ((ctx?.notes as Array<Record<string, unknown>>) || [])
@@ -1458,6 +1563,9 @@ ${notesText.trim() || 'No notes available.'}
             `[Note: ${n.title || n.id || 'Untitled'}]\n${n.content || n.text || JSON.stringify(n)}`
         )
         .join('\n\n')
+      const ragSection = ragBlock
+        ? `\n\nTOP VECTOR-RETRIEVED PASSAGES FOR THIS QUESTION:\n---\n${ragBlock}\n---`
+        : ''
 
       // 2. Optional Exa full-content web search if 🌐 Web is ON
       let webBlock = ''
@@ -1505,7 +1613,7 @@ ${sourcesText.trim() || 'No source documents selected.'}
 NOTEBOOK NOTES:
 ---
 ${notesText.trim() || 'No notes available.'}
----${webBlock}`
+---${ragSection}${webBlock}`
 
       const combinedHistory = [
         ...chat.messages.slice(-8).map((m) => ({
@@ -1682,7 +1790,10 @@ ${notesText.trim() || 'No notes available.'}
         setInput('')
         committedDictationRef.current = ''
 
-        let payloadText = trimmed
+        // Hybrid Vector RAG: retrieve top matching passages from checked sources in this notebook
+        const ragBlock = await retrieveNotebookRagBlock(trimmed, 45000)
+
+        let webPrefix = ''
         if (webSearchEnabled) {
           setIsSearchingWeb(true)
           try {
@@ -1701,7 +1812,7 @@ ${notesText.trim() || 'No notes available.'}
                       `[${r.title || r.url}](${r.url})\n${r.text || ''}`
                   )
                   .join('\n\n')
-                payloadText = `LIVE WEB SEARCH RESULTS (EXA):\n${webBlock}\n\nUSER QUESTION: ${trimmed}`
+                webPrefix = `LIVE WEB SEARCH RESULTS (EXA):\n${webBlock}\n\n`
               }
             }
           } catch (err) {
@@ -1710,6 +1821,14 @@ ${notesText.trim() || 'No notes available.'}
             setIsSearchingWeb(false)
           }
         }
+
+        const ragPrefix = ragBlock
+          ? `TOP VECTOR-RETRIEVED PASSAGES FROM THIS NOTEBOOK:\n${ragBlock}\n\n`
+          : ''
+        const payloadText =
+          ragPrefix || webPrefix
+            ? `${ragPrefix}${webPrefix}USER QUESTION: ${trimmed}`
+            : trimmed
 
         if (geminiWsRef.current && geminiWsRef.current.readyState === WebSocket.OPEN) {
           geminiWsRef.current.send(JSON.stringify({ type: 'text', text: payloadText }))
@@ -1720,7 +1839,25 @@ ${notesText.trim() || 'No notes available.'}
       return
     }
 
-    let extraContext: Record<string, unknown> | undefined
+    const extraContext: Record<string, unknown> = {}
+    // Hybrid Vector RAG for Typed Chat (critical for large textbooks that exceed raw prompt limits)
+    const [ragBlock, sourceEntries] = await Promise.all([
+      retrieveNotebookRagBlock(trimmed, 80000),
+      loadCheckedSourceSummaries(),
+    ])
+    if (ragBlock) {
+      extraContext.hybrid_vector_rag_note =
+        'Top vector-matched passages retrieved via bge-base-en-v1.5 from the active notebook sources for this question. Prioritize these exact passages and cite chapters/sources accurately.'
+      extraContext.vector_rag_passages = ragBlock
+    }
+    const largeBookTocs = sourceEntries
+      .filter((e) => e.isLarge && e.text.trim())
+      .map((e) => `[Table of Contents / Opening of ${e.title}]\n${e.text}`)
+      .join('\n\n')
+    if (largeBookTocs) {
+      extraContext.textbook_table_of_contents = largeBookTocs
+    }
+
     if (webSearchEnabled) {
       setIsSearchingWeb(true)
       try {
@@ -1737,11 +1874,9 @@ ${notesText.trim() || 'No notes available.'}
           const data = await res.json()
           const results = Array.isArray(data?.results) ? data.results : []
           if (results.length > 0) {
-            extraContext = {
-              web_search_note:
-                'Live web search (Exa) is enabled for this turn. You have full page contents below in web_search_results. Synthesize them alongside the notebook sources and include clickable markdown links [Title](url) when citing web pages.',
-              web_search_results: results,
-            }
+            extraContext.web_search_note =
+              'Live web search (Exa) is enabled for this turn. You have full page contents below in web_search_results. Synthesize them alongside the notebook sources and include clickable markdown links [Title](url) when citing web pages.'
+            extraContext.web_search_results = results
           }
         } else {
           toast.error('Exa web search failed; answering from notebook sources only.')
@@ -1754,7 +1889,11 @@ ${notesText.trim() || 'No notes available.'}
       }
     }
 
-    const ok = await chat.sendMessage(trimmed, undefined, extraContext)
+    const ok = await chat.sendMessage(
+      trimmed,
+      undefined,
+      Object.keys(extraContext).length > 0 ? extraContext : undefined
+    )
     if (ok) {
       setInput('')
       if (textareaRef.current) {
