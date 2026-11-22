@@ -197,6 +197,28 @@ async def content_process(state: SourceState) -> dict:
     content_state: Dict[str, Any] = state["content_state"]
     await validate_content_state(content_state)
 
+    # Dedicated GitHub repository / directory ingestion pipeline
+    if content_state.get("source_type") == "github":
+        from open_notebook.utils.github_ingest import ingest_github_repository
+
+        gh_url = content_state.get("url") or ""
+        logger.info(f"Extracting GitHub repository/directory via dedicated ingestor: {gh_url}")
+        title, full_markdown, meta = await ingest_github_repository(
+            raw_url=gh_url,
+            subdir=content_state.get("github_subdir"),
+            include_ext=content_state.get("github_include_ext"),
+            token=content_state.get("github_token"),
+            use_llm_summary=True,
+        )
+        processed = ExtractionOutput(
+            content=full_markdown,
+            title=title,
+            source_type="github",
+            identified_type="github_repository",
+            metadata=meta,
+        )
+        return {"extraction": processed}
+
     # content-core 2.x takes engine/model overrides via ContentCoreConfig
     # (keyword-only), not inside the input dict.
     config_kwargs: Dict[str, Any] = {
@@ -357,8 +379,14 @@ async def save_source(state: SourceState) -> dict:
 
     # Update the source with processed content. content-core's ExtractionOutput
     # does not echo url/file_path back, so carry them from the input state.
+    canonical_url = (
+        extraction.metadata.get("canonical_url")
+        if isinstance(extraction.metadata, dict)
+        else None
+    )
     source.asset = Asset(
-        url=content_state.get("url"), file_path=content_state.get("file_path")
+        url=canonical_url or content_state.get("url"),
+        file_path=content_state.get("file_path"),
     )
     source.full_text = extraction.content
 

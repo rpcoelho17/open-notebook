@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { MarkdownRenderer } from '@/components/ui/markdown-renderer'
+import {
+  GitHubSourceContent,
+  isGitHubStructuredSource,
+} from './GitHubSourceContent'
 import { sourcesApi } from '@/lib/api/sources'
 import { QUERY_KEYS } from '@/lib/api/query-client'
 import { useSource, useUpdateSource, useDeleteSource } from '@/lib/hooks/use-sources'
@@ -581,9 +585,13 @@ function SourceDetailContentInner({
                   )}
                 </div>
               )}
-              <MarkdownRenderer>
-                {source.full_text || t('sources.noContent')}
-              </MarkdownRenderer>
+              {isGitHubStructuredSource(source.full_text) ? (
+                <GitHubSourceContent fullText={source.full_text || ''} />
+              ) : (
+                <MarkdownRenderer>
+                  {source.full_text || t('sources.noContent')}
+                </MarkdownRenderer>
+              )}
             </section>
           </TabsContent>
 

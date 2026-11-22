@@ -2,7 +2,19 @@
 
 import { useMemo, useState } from "react"
 import { Control, FieldErrors, UseFormRegister, UseFormSetValue, useWatch } from "react-hook-form"
-import { FileIcon, LinkIcon, FileTextIcon } from "lucide-react"
+import {
+  FileIcon,
+  LinkIcon,
+  FileTextIcon,
+  FolderGit2,
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
+} from "lucide-react"
 import { useTranslation } from "@/lib/hooks/use-translation"
 import { FormSection } from "@/components/ui/form-section"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -10,18 +22,48 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Controller } from "react-hook-form"
+import { sourcesApi } from "@/lib/api/sources"
+import { GitHubPreviewResponse } from "@/lib/types/api"
 
 interface CreateSourceFormData {
-  type: 'link' | 'upload' | 'text'
+  type: 'link' | 'upload' | 'text' | 'github'
   title?: string
   url?: string
   content?: string
   file?: FileList | File
+  github_subdir?: string
+  github_include_ext?: string
+  github_token?: string
   notebooks?: string[]
   transformations?: string[]
   embed: boolean
   async_processing: boolean
+}
+
+export function looksLikeGitHubRepoUrl(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed || trimmed.includes('\n')) return false
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed)) return true
+  try {
+    const u = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`)
+    const host = u.hostname.toLowerCase()
+    if (host !== 'github.com' && host !== 'www.github.com') return false
+    const parts = u.pathname.split('/').filter(Boolean)
+    if (parts.length < 2) return false
+    if (parts.length === 2) return true
+    const section = parts[2].toLowerCase()
+    return section === 'tree' || section === 'blob'
+  } catch {
+    return false
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
 // Helper functions for batch URL parsing
@@ -73,6 +115,13 @@ const getSourceTypes = (t: TFunction) => [
     description: t('sources.processDescription'),
   },
   {
+    value: 'github' as const,
+    label: 'GitHub',
+    icon: FolderGit2,
+    description:
+      'Import a GitHub repository or directory as a single source with an AI-generated overview, directory tree, main files guide, and vector-indexed code.',
+  },
+  {
     value: 'upload' as const,
     label: t('sources.uploadFile'),
     icon: FileIcon,
@@ -103,9 +152,49 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
   const selectedType = useWatch({ control, name: 'type' })
   const urlInput = useWatch({ control, name: 'url' })
   const fileInput = useWatch({ control, name: 'file' })
+  const githubSubdir = useWatch({ control, name: 'github_subdir' })
+  const githubIncludeExt = useWatch({ control, name: 'github_include_ext' })
+  const githubToken = useWatch({ control, name: 'github_token' })
 
   // Track if HTML content was pasted
   const [hasHtmlContent, setHasHtmlContent] = useState(false)
+
+  // GitHub preview state
+  const [showGithubAdvanced, setShowGithubAdvanced] = useState(false)
+  const [githubPreview, setGithubPreview] = useState<GitHubPreviewResponse | null>(null)
+  const [githubPreviewLoading, setGithubPreviewLoading] = useState(false)
+  const [githubPreviewError, setGithubPreviewError] = useState<string | null>(null)
+
+  const handlePreviewGitHub = async () => {
+    const trimmed = (urlInput || '').trim()
+    if (!trimmed) return
+    setGithubPreviewLoading(true)
+    setGithubPreviewError(null)
+    try {
+      const result = await sourcesApi.previewGitHub({
+        url: trimmed,
+        subdir: githubSubdir?.trim() || undefined,
+        include_ext: githubIncludeExt?.trim() || undefined,
+        token: githubToken?.trim() || undefined,
+      })
+      setGithubPreview(result)
+    } catch (err: unknown) {
+      setGithubPreview(null)
+      const detail =
+        (err as { response?: { data?: { detail?: string } }; message?: string })?.response?.data?.detail ||
+        (err as { message?: string })?.message ||
+        'Could not preview repository.'
+      setGithubPreviewError(detail)
+    } finally {
+      setGithubPreviewLoading(false)
+    }
+  }
+
+  const singleLinkLooksLikeGithub = useMemo(() => {
+    if (selectedType !== 'link' || !urlInput) return false
+    const urls = parseUrls(urlInput)
+    return urls.length === 1 && looksLikeGitHubRepoUrl(urls[0])
+  }, [selectedType, urlInput])
 
   // Handle paste event to check for HTML content in clipboard
   const handleTextPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -165,16 +254,20 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
           render={({ field }) => (
             <Tabs 
               value={field.value || ''} 
-              onValueChange={(value) => field.onChange(value as 'link' | 'upload' | 'text')}
+              onValueChange={(value) => {
+                field.onChange(value as 'link' | 'upload' | 'text' | 'github')
+                setGithubPreview(null)
+                setGithubPreviewError(null)
+              }}
               className="w-full"
             >
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-4">
                 {getSourceTypes(t).map((type) => {
                   const Icon = type.icon
                   return (
-                    <TabsTrigger key={type.value} value={type.value} className="gap-2">
-                      <Icon className="h-4 w-4" />
-                      {type.label}
+                    <TabsTrigger key={type.value} value={type.value} className="gap-1.5 px-2 text-xs sm:text-sm">
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{type.label}</span>
                     </TabsTrigger>
                   )
                 })}
@@ -208,6 +301,28 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
                       <p className="text-xs text-muted-foreground mt-1">
                         {t('sources.batchUrlHint')}
                       </p>
+                      {singleLinkLooksLikeGithub && (
+                        <div className="mt-2.5 flex items-center justify-between gap-3 rounded-md border border-purple-500/30 bg-purple-500/10 px-3 py-2">
+                          <div className="flex items-center gap-2 text-xs text-foreground">
+                            <FolderGit2 className="h-4 w-4 text-purple-400 shrink-0" />
+                            <span>
+                              GitHub repository detected. Use the <strong>GitHub</strong> tab to import the full codebase, directory tree, and summary.
+                            </span>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            className="h-7 shrink-0 text-xs"
+                            onClick={() => {
+                              setValue('type', 'github', { shouldValidate: true })
+                              onClearUrlErrors?.()
+                            }}
+                          >
+                            Switch to GitHub
+                          </Button>
+                        </div>
+                      )}
                       {errors.url && (
                         <p className="text-sm text-destructive mt-1">{errors.url.message}</p>
                       )}
@@ -234,6 +349,180 @@ export function SourceTypeStep({ control, register, setValue, errors, urlValidat
                     </div>
                   )}
                   
+                  {type.value === 'github' && (
+                    <div className="space-y-3">
+                      <div>
+                        <Label htmlFor="github-url" className="mb-2 block">
+                          Repository or Directory URL
+                        </Label>
+                        <div className="flex gap-2">
+                          <Input
+                            id="github-url"
+                            {...register('url', {
+                              onChange: () => {
+                                onClearUrlErrors?.()
+                                setGithubPreview(null)
+                                setGithubPreviewError(null)
+                              },
+                            })}
+                            placeholder="https://github.com/owner/repo  or  .../tree/main/src"
+                            className="font-mono text-sm"
+                            autoComplete="off"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handlePreviewGitHub}
+                            disabled={githubPreviewLoading || !(urlInput || '').trim()}
+                            className="shrink-0"
+                          >
+                            {githubPreviewLoading ? (
+                              <>
+                                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                Checking...
+                              </>
+                            ) : (
+                              'Preview'
+                            )}
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Supports full repositories, specific branches/subfolders (<code>/tree/branch/dir</code>), or shorthand like <code>owner/repo</code>. Binaries, lockfiles, and build folders are skipped automatically.
+                        </p>
+                        {errors.url && (
+                          <p className="text-sm text-destructive mt-1">{errors.url.message}</p>
+                        )}
+                      </div>
+
+                      {githubPreviewError && (
+                        <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                          <span>{githubPreviewError}</span>
+                        </div>
+                      )}
+
+                      {githubPreview && (
+                        <div className="rounded-lg border border-purple-500/30 bg-purple-500/5 p-3.5 space-y-2.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                              <span className="font-mono text-sm font-medium truncate">
+                                {githubPreview.full_name}
+                                {githubPreview.subdir ? `/${githubPreview.subdir}` : ''}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <Badge variant="secondary" className="gap-1 font-mono text-[11px]">
+                                <GitBranch className="h-3 w-3" />
+                                {githubPreview.branch}
+                              </Badge>
+                              {githubPreview.primary_language && (
+                                <Badge variant="outline" className="text-[11px]">
+                                  {githubPreview.primary_language}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+
+                          {githubPreview.description && (
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              {githubPreview.description}
+                            </p>
+                          )}
+
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                            <span>
+                              <strong className="text-foreground">{githubPreview.included_files}</strong> files to index
+                            </span>
+                            {githubPreview.skipped_files > 0 && (
+                              <span>{githubPreview.skipped_files} skipped (binaries/lockfiles)</span>
+                            )}
+                            <span>~{formatBytes(githubPreview.estimated_bytes)} text</span>
+                            {githubPreview.license && <span>{githubPreview.license}</span>}
+                          </div>
+
+                          {Object.keys(githubPreview.top_languages).length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 pt-0.5">
+                              {Object.entries(githubPreview.top_languages).map(([ext, count]) => (
+                                <span
+                                  key={ext}
+                                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                                >
+                                  {ext} ({count})
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {githubPreview.truncated && (
+                            <p className="text-[11px] text-amber-400 flex items-center gap-1.5">
+                              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                              Large repo — top 250 prioritized files will be indexed. Set a subfolder below to focus on a specific area.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="rounded-md border border-border/70">
+                        <button
+                          type="button"
+                          onClick={() => setShowGithubAdvanced((prev) => !prev)}
+                          className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <span>Advanced options (subfolder, extensions, private repo token)</span>
+                          {showGithubAdvanced ? (
+                            <ChevronDown className="h-3.5 w-3.5" />
+                          ) : (
+                            <ChevronRight className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        {showGithubAdvanced && (
+                          <div className="border-t border-border/70 p-3 space-y-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <Label htmlFor="github-subdir" className="text-xs mb-1 block">
+                                  Subfolder filter (optional)
+                                </Label>
+                                <Input
+                                  id="github-subdir"
+                                  {...register('github_subdir')}
+                                  placeholder="e.g. src/api or docs"
+                                  className="h-8 font-mono text-xs"
+                                  autoComplete="off"
+                                />
+                              </div>
+                              <div>
+                                <Label htmlFor="github-ext" className="text-xs mb-1 block">
+                                  Only include extensions (optional)
+                                </Label>
+                                <Input
+                                  id="github-ext"
+                                  {...register('github_include_ext')}
+                                  placeholder="e.g. .py, .ts, .md"
+                                  className="h-8 font-mono text-xs"
+                                  autoComplete="off"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <Label htmlFor="github-token" className="text-xs mb-1 block">
+                                GitHub Access Token (optional, for private repos — never stored)
+                              </Label>
+                              <Input
+                                id="github-token"
+                                type="password"
+                                {...register('github_token')}
+                                placeholder="ghp_... or github_pat_..."
+                                className="h-8 font-mono text-xs"
+                                autoComplete="off"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {type.value === 'upload' && (
                     <div>
                       <div className="flex items-center justify-between mb-2">

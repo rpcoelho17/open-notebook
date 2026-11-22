@@ -10,6 +10,8 @@ import {
   UpdateSourceRequest,
   DuplicateCheckRequest,
   DuplicateSourceInfo,
+  GitHubPreviewRequest,
+  GitHubPreviewResponse,
 } from '@/lib/types/api'
 
 export type SourceSortField = 'type' | 'title' | 'created' | 'updated' | 'insights_count' | 'embedded'
@@ -53,6 +55,15 @@ export const sourcesApi = {
     if (data.content) {
       formData.append('content', data.content)
     }
+    if (data.github_subdir) {
+      formData.append('github_subdir', data.github_subdir)
+    }
+    if (data.github_include_ext) {
+      formData.append('github_include_ext', data.github_include_ext)
+    }
+    if (data.github_token) {
+      formData.append('github_token', data.github_token)
+    }
     if (data.transformations !== undefined) {
       formData.append('transformations', JSON.stringify(data.transformations))
     }
@@ -76,6 +87,14 @@ export const sourcesApi = {
       data
     )
     return response.data.duplicates
+  },
+
+  previewGitHub: async (data: GitHubPreviewRequest) => {
+    const response = await apiClient.post<GitHubPreviewResponse>(
+      '/sources/github/preview',
+      data
+    )
+    return response.data
   },
 
   update: async (id: string, data: UpdateSourceRequest) => {

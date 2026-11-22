@@ -360,11 +360,21 @@ class SourceCreate(BaseModel):
         description="List of notebook IDs to add the source to (max 50)",
     )
     # Required fields
-    type: str = Field(..., description="Source type: link, upload, or text")
-    url: Optional[str] = Field(None, description="URL for link type")
+    type: str = Field(..., description="Source type: link, upload, text, or github")
+    url: Optional[str] = Field(None, description="URL for link or github type")
     file_path: Optional[str] = Field(None, description="File path for upload type")
     content: Optional[str] = Field(None, description="Text content for text type")
     title: Optional[str] = Field(None, description="Source title")
+    # Optional GitHub ingestion options (token is transient, never stored)
+    github_subdir: Optional[str] = Field(
+        None, description="Optional subdirectory filter for github source type"
+    )
+    github_include_ext: Optional[str] = Field(
+        None, description="Optional comma-separated file extensions filter for github source type"
+    )
+    github_token: Optional[str] = Field(
+        None, description="Optional transient GitHub token for private repositories"
+    )
     transformations: Optional[List[str]] = Field(
         default_factory=list,
         max_length=50,
@@ -415,15 +425,47 @@ class DuplicateSourceInfo(BaseModel):
 
 
 class DuplicateCheckRequest(BaseModel):
-    type: Literal["link", "upload", "text"] = Field(
-        ..., description="Source type: link, upload, or text"
+    type: Literal["link", "upload", "text", "github"] = Field(
+        ..., description="Source type: link, upload, text, or github"
     )
-    url: Optional[str] = Field(None, description="URL for link type")
+    url: Optional[str] = Field(None, description="URL for link or github type")
     title: Optional[str] = Field(None, description="Source title")
     content: Optional[str] = Field(None, description="Text content for text type")
     filename: Optional[str] = Field(
         None, description="Original filename for upload type"
     )
+
+
+class GitHubPreviewRequest(BaseModel):
+    url: str = Field(..., description="GitHub repository or directory URL")
+    subdir: Optional[str] = Field(None, description="Optional subdirectory override")
+    include_ext: Optional[str] = Field(
+        None, description="Optional comma-separated extensions filter (e.g. .py,.ts,.md)"
+    )
+    token: Optional[str] = Field(
+        None, description="Optional GitHub access token for private repos"
+    )
+
+
+class GitHubPreviewResponse(BaseModel):
+    owner: str
+    repo: str
+    full_name: str
+    canonical_url: str
+    branch: str
+    commit_sha: str
+    subdir: Optional[str] = None
+    description: str = ""
+    primary_language: Optional[str] = None
+    stars: int = 0
+    license: Optional[str] = None
+    total_files_in_scope: int
+    included_files: int
+    skipped_files: int
+    estimated_bytes: int
+    truncated: bool = False
+    top_languages: Dict[str, int] = Field(default_factory=dict)
+    sample_files: List[str] = Field(default_factory=list)
 
 
 class DuplicateCheckResponse(BaseModel):

@@ -29,6 +29,8 @@ from api.models import (
     DuplicateCheckRequest,
     DuplicateCheckResponse,
     DuplicateSourceInfo,
+    GitHubPreviewRequest,
+    GitHubPreviewResponse,
     InsightCreationResponse,
     SourceCreate,
     SourceInsightResponse,
@@ -47,6 +49,12 @@ from open_notebook.domain.notebook import (
     Source,
 )
 from open_notebook.domain.transformation import Transformation
+from open_notebook.utils.github_ingest import (
+    GITHUB_INDEXED_FILES_MARKER,
+    is_github_repo_url,
+    parse_github_url,
+    preview_github_repository,
+)
 from open_notebook.exceptions import (
     InvalidInputError,
     NotFoundError,
@@ -394,6 +402,9 @@ def parse_source_form_data(
     url: Optional[str] = Form(None),
     content: Optional[str] = Form(None),
     title: Optional[str] = Form(None),
+    github_subdir: Optional[str] = Form(None),
+    github_include_ext: Optional[str] = Form(None),
+    github_token: Optional[str] = Form(None),
     transformations: Optional[str] = Form(None),  # JSON string of transformation IDs
     embed: str = Form("false"),  # Accept as string, convert to bool
     delete_source: str = Form("false"),  # Accept as string, convert to bool
@@ -441,6 +452,9 @@ def parse_source_form_data(
             url=url,
             content=content,
             title=title,
+            github_subdir=github_subdir,
+            github_include_ext=github_include_ext,
+            github_token=github_token,
             file_path=None,  # Will be set later if file is uploaded
             transformations=transformations_list,
             embed=embed_bool,
@@ -458,6 +472,35 @@ def parse_source_form_data(
     return source_data, file
 
 
+def _normalize_github_input_url(raw_url: str) -> str:
+    """Validate and normalize a GitHub URL (including owner/repo shorthand) to https://github.com/..."""
+    target = parse_github_url(raw_url)
+    if target.kind in ("tree", "blob") and target.raw_ref_path:
+        return f"https://github.com/{target.owner}/{target.repo}/{target.kind}/{target.raw_ref_path}"
+    return f"https://github.com/{target.owner}/{target.repo}"
+
+
+@router.post("/sources/github/preview", response_model=GitHubPreviewResponse)
+async def preview_github_source(payload: GitHubPreviewRequest):
+    """Preview a GitHub repository or directory before importing it as a source."""
+    try:
+        preview = await preview_github_repository(
+            raw_url=payload.url,
+            subdir=payload.subdir,
+            include_ext=payload.include_ext,
+            token=payload.token,
+        )
+        return GitHubPreviewResponse(**preview)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.warning(f"GitHub preview failed: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail="Could not fetch repository metadata from GitHub. Check the URL and network connection.",
+        )
+
+
 @router.post("/sources/check-duplicates", response_model=DuplicateCheckResponse)
 async def check_duplicates(payload: DuplicateCheckRequest):
     """Pre-creation duplicate probe for the add-source flow (#257).
@@ -466,18 +509,24 @@ async def check_duplicates(payload: DuplicateCheckRequest):
     so the client can warn and offer Cancel vs Proceed-anyway. Never blocks:
     returns an empty list when nothing matches or the lookup fails.
     """
-    if payload.type == "link" and not payload.url:
-        raise InvalidInputError("URL is required for link type")
-    if payload.url:
+    if payload.type in ("link", "github") and not payload.url:
+        raise InvalidInputError("URL is required for link or github type")
+    check_url = payload.url
+    if payload.type == "github" and check_url:
+        try:
+            check_url = _normalize_github_input_url(check_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if check_url:
         # Same SSRF guard as source creation: never normalize or echo a URL
         # that points at internal/metadata addresses.
         try:
-            await validate_url(payload.url, "source")
+            await validate_url(check_url, "source")
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
     duplicates = await find_duplicate_sources(
-        source_type=payload.type,
-        url=payload.url,
+        source_type="link" if payload.type == "github" else payload.type,
+        url=check_url,
         title=payload.title,
         content=payload.content,
         filename=payload.filename,
@@ -698,10 +747,28 @@ async def _build_content_state(
                 status_code=400, detail="Content is required for text type"
             )
         content_state["content"] = source_data.content
+    elif source_data.type == "github":
+        if not source_data.url:
+            raise HTTPException(
+                status_code=400, detail="GitHub repository URL is required"
+            )
+        try:
+            normalized_url = _normalize_github_input_url(source_data.url)
+            await validate_url(normalized_url, "source")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        content_state["source_type"] = "github"
+        content_state["url"] = normalized_url
+        if source_data.github_subdir:
+            content_state["github_subdir"] = source_data.github_subdir.strip()
+        if source_data.github_include_ext:
+            content_state["github_include_ext"] = source_data.github_include_ext.strip()
+        if source_data.github_token:
+            content_state["github_token"] = source_data.github_token.strip()
     else:
         raise HTTPException(
             status_code=400,
-            detail="Invalid source type. Must be link, upload, or text",
+            detail="Invalid source type. Must be link, upload, text, or github",
         )
 
     return content_state
@@ -720,6 +787,8 @@ async def _create_source_async_path(
     # Persist asset before save so it's available for retry if processing fails
     if source_data.type == "link":
         source_asset = Asset(url=source_data.url)
+    elif source_data.type == "github":
+        source_asset = Asset(url=content_state.get("url") or source_data.url)
     elif source_data.type == "upload":
         source_asset = Asset(file_path=file_path or source_data.file_path)
     else:
@@ -1220,6 +1289,11 @@ async def retry_source_processing(source_id: str):
                 }
             elif source.asset.url:
                 content_state = {"url": source.asset.url}
+                if is_github_repo_url(source.asset.url) and (
+                    not source.full_text
+                    or GITHUB_INDEXED_FILES_MARKER in source.full_text
+                ):
+                    content_state["source_type"] = "github"
             else:
                 raise HTTPException(
                     status_code=400, detail="Source asset has no file_path or url"

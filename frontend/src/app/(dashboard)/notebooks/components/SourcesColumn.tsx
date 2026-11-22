@@ -17,6 +17,7 @@ import {
 import {
   Plus,
   FileText,
+  FolderGit2,
   Globe,
   Link2,
   Loader2,
@@ -69,6 +70,9 @@ function getSourceIcon(source: SourceListResponse) {
     return <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />
   }
   if (source.asset?.url) {
+    if (/^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+/i.test(source.asset.url)) {
+      return <FolderGit2 className="h-4 w-4 text-purple-400 shrink-0" />
+    }
     return <Globe className="h-4 w-4 text-[#f97316] shrink-0" />
   }
   if (source.asset?.file_path) {
@@ -295,7 +299,7 @@ export function SourcesColumn({
               <FileText className="h-8 w-8 mb-3 opacity-40" />
               <p className="text-xs font-medium text-[#c4c7c5] mb-1">Saved sources will appear here</p>
               <p className="text-[11px] leading-relaxed">
-                Click Add sources above to add PDFs, websites, YouTube links, or pasted text.
+                Click Add sources above to add PDFs, GitHub repos, websites, YouTube links, or pasted text.
               </p>
             </div>
           ) : (

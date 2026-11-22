@@ -819,10 +819,17 @@ export function ChatColumn({
           if (res.ok) {
             const detail = await res.json()
             const raw = String(detail.full_text || detail.content || '')
-            const isLarge = raw.length > 35000
+            const ghMarkerIdx = raw.indexOf('<!-- GITHUB_INDEXED_FILES_START -->')
+            const isLarge = raw.length > 35000 || ghMarkerIdx !== -1
+            const summaryText =
+              ghMarkerIdx !== -1
+                ? raw.slice(0, Math.min(ghMarkerIdx, 16000)).trim()
+                : isLarge
+                  ? raw.slice(0, 12000)
+                  : raw
             const entry = {
               title: String(detail.title || s.title || s.id),
-              text: isLarge ? raw.slice(0, 12000) : raw,
+              text: summaryText,
               fullLen: raw.length,
               isLarge,
             }

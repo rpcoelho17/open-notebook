@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { WizardContainer, WizardStep } from '@/components/ui/wizard-container'
-import { SourceTypeStep, parseAndValidateUrls } from './steps/SourceTypeStep'
+import { SourceTypeStep, parseAndValidateUrls, looksLikeGitHubRepoUrl } from './steps/SourceTypeStep'
 import { NotebooksStep } from './steps/NotebooksStep'
 import { ProcessingStep } from './steps/ProcessingStep'
 import { DuplicateSourceDialog } from './DuplicateSourceDialog'
@@ -33,11 +33,14 @@ import { PROXY_MAX_UPLOAD_MB } from '../../lib/upload-limits'
 const MAX_BATCH_SIZE = 50
 
 const createSourceSchema = z.object({
-  type: z.enum(['link', 'upload', 'text']),
+  type: z.enum(['link', 'upload', 'text', 'github']),
   title: z.string().optional(),
   url: z.string().optional(),
   content: z.string().optional(),
   file: z.any().optional(),
+  github_subdir: z.string().optional(),
+  github_include_ext: z.string().optional(),
+  github_token: z.string().optional(),
   notebooks: z.array(z.string()).optional(),
   transformations: z.array(z.string()).optional(),
   embed: z.boolean(),
@@ -45,6 +48,9 @@ const createSourceSchema = z.object({
 }).refine((data) => {
   if (data.type === 'link') {
     return !!data.url && data.url.trim() !== ''
+  }
+  if (data.type === 'github') {
+    return !!data.url && looksLikeGitHubRepoUrl(data.url)
   }
   if (data.type === 'text') {
     return !!data.content && data.content.trim() !== ''
@@ -237,6 +243,9 @@ export function AddSourceDialog({
           }
           return !!watchedUrl && watchedUrl.trim() !== ''
         }
+        if (selectedType === 'github') {
+          return !!watchedUrl && looksLikeGitHubRepoUrl(watchedUrl)
+        }
         if (selectedType === 'text') {
           return !!watchedContent && watchedContent.trim() !== '' &&
                  !!watchedTitle && watchedTitle.trim() !== ''
@@ -315,9 +324,12 @@ export function AddSourceDialog({
     const createRequest: CreateSourceRequest = {
       type: data.type,
       notebooks: selectedNotebooks,
-      url: data.type === 'link' ? data.url : undefined,
+      url: data.type === 'link' || data.type === 'github' ? data.url?.trim() : undefined,
       content: data.type === 'text' ? data.content : undefined,
       title: data.title,
+      github_subdir: data.type === 'github' ? data.github_subdir?.trim() || undefined : undefined,
+      github_include_ext: data.type === 'github' ? data.github_include_ext?.trim() || undefined : undefined,
+      github_token: data.type === 'github' ? data.github_token?.trim() || undefined : undefined,
       transformations: selectedTransformations,
       embed: data.embed,
       delete_source: false,
@@ -486,7 +498,7 @@ export function AddSourceDialog({
           : undefined
         const duplicates = await sourcesApi.checkDuplicates({
           type: data.type,
-          url: data.type === 'link' ? data.url : undefined,
+          url: data.type === 'link' || data.type === 'github' ? data.url?.trim() : undefined,
           title: data.title,
           content: data.type === 'text' ? data.content : undefined,
           filename: file instanceof File ? file.name : undefined,

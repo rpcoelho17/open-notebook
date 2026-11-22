@@ -111,16 +111,47 @@ export interface CreateSourceRequest {
   // New multi-notebook support
   notebooks?: string[]
   // Required fields
-  type: 'link' | 'upload' | 'text'
+  type: 'link' | 'upload' | 'text' | 'github'
   url?: string
   file_path?: string
   content?: string
   title?: string
+  github_subdir?: string
+  github_include_ext?: string
+  github_token?: string
   transformations?: string[]
   embed?: boolean
   delete_source?: boolean
   // New async processing support
   async_processing?: boolean
+}
+
+export interface GitHubPreviewRequest {
+  url: string
+  subdir?: string
+  include_ext?: string
+  token?: string
+}
+
+export interface GitHubPreviewResponse {
+  owner: string
+  repo: string
+  full_name: string
+  canonical_url: string
+  branch: string
+  commit_sha: string
+  subdir?: string | null
+  description: string
+  primary_language?: string | null
+  stars: number
+  license?: string | null
+  total_files_in_scope: number
+  included_files: number
+  skipped_files: number
+  estimated_bytes: number
+  truncated: boolean
+  top_languages: Record<string, number>
+  sample_files: string[]
 }
 
 export interface DuplicateSourceInfo {
@@ -135,7 +166,7 @@ export interface DuplicateSourceInfo {
 }
 
 export interface DuplicateCheckRequest {
-  type: 'link' | 'upload' | 'text'
+  type: 'link' | 'upload' | 'text' | 'github'
   url?: string
   title?: string
   content?: string
