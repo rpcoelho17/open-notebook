@@ -1323,24 +1323,25 @@ ${notesText.trim() || 'No notes available.'}
   }, [sources, contextSelections.sources])
 
   // Ready sources signature to trigger auto-summary when sources are added/completed
-  const readySourcesKey = useMemo(() => {
-    const readyIds = sources
+  const readySourceIds = useMemo(() => {
+    return sources
       .filter((s) => !s.status || s.status === 'completed')
       .map((s) => s.id)
       .sort()
-    return readyIds.join(',')
   }, [sources])
+
+  const readySourcesKey = useMemo(() => readySourceIds.join(','), [readySourceIds])
 
   const generateOverviewSummary = useCallback(
     async (forceRefresh = false) => {
-      if (!readySourcesKey) {
+      if (!readySourcesKey || readySourceIds.length === 0) {
         setAutoSummary('')
         return
       }
-      const cacheKey = `notebook_auto_summary_v1:${notebookId}:${readySourcesKey}`
+      const cacheKey = `notebook_auto_summary_v2:${notebookId}:${readySourcesKey}`
       if (!forceRefresh && typeof window !== 'undefined') {
         const cached = localStorage.getItem(cacheKey)
-        if (cached) {
+        if (cached && cached.trim()) {
           setAutoSummary(cached)
           return
         }
@@ -1348,54 +1349,41 @@ ${notesText.trim() || 'No notes available.'}
 
       setIsGeneratingSummary(true)
       try {
-        const ctx = await chat.buildContext()
-        const srcBlocks = ((ctx?.sources as Array<Record<string, unknown>>) || []).map((s) => {
-          const title = String(s.title || s.name || 'Source')
-          const body = String(s.full_text || s.content || s.text || '')
-          return `Source: ${title}\n${body.slice(0, 12000)}`
-        })
-
-        const combined = srcBlocks.join('\n\n').trim()
-        if (!combined) {
-          setIsGeneratingSummary(false)
-          return
-        }
-
-        const res = await fetch(BRIDGE_CHAT_URL, {
+        const res = await fetch('/api/transformations/studio-generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: SUMMARY_MODEL,
-            reasoning_effort: 'low',
-            messages: [
-              {
-                role: 'system',
-                content:
-                  'Write a crisp, high-signal single-paragraph NotebookLM-style overview (4-6 sentences) summarizing the provided notebook source(s). Bold the most important concepts/terms using **bold**. Do not add a heading or preamble.',
-              },
-              { role: 'user', content: combined.slice(0, 24000) },
-            ],
-            stream: false,
+            notebook_id: notebookId,
+            source_ids: readySourceIds,
+            prompt:
+              'Write a crisp, high-signal single-paragraph NotebookLM-style overview (4-6 sentences) summarizing the provided notebook source(s). Bold the most important concepts/terms using **bold**. Do not add a heading, bullet list, or preamble.',
+            system_prompt:
+              'You are a concise research assistant. Write a single clear 4-6 sentence overview paragraph grounded strictly in the provided sources. Bold key concepts with **bold**. Output ONLY the paragraph with no heading or preamble.',
+            max_source_chars: 48000,
           }),
         })
 
         if (res.ok) {
           const data = await res.json()
-          const summary = (data?.choices?.[0]?.message?.content || '').trim()
+          const summary = String(data?.output || '').trim()
           if (summary) {
             setAutoSummary(summary)
             if (typeof window !== 'undefined') {
               localStorage.setItem(cacheKey, summary)
             }
           }
+        } else {
+          // Allow retry if backend returned a transient error
+          lastSummaryKeyRef.current = ''
         }
       } catch (err) {
         console.error('Auto-summary failed:', err)
+        lastSummaryKeyRef.current = ''
       } finally {
         setIsGeneratingSummary(false)
       }
     },
-    [notebookId, readySourcesKey, chat]
+    [notebookId, readySourcesKey, readySourceIds]
   )
 
   useEffect(() => {
@@ -2050,6 +2038,17 @@ ${notesText.trim() || 'No notes available.'}
                       <RefreshCw className="h-3.5 w-3.5" />
                     </button>
                   </div>
+                </div>
+              ) : readySourcesKey ? (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => generateOverviewSummary(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium text-[#9aa0a6] hover:text-[#e8eaed] hover:bg-[#1e1f24] border border-[#2b2d32] transition-colors"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Generate notebook overview
+                  </button>
                 </div>
               ) : null}
             </div>

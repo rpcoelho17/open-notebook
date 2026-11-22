@@ -7,6 +7,7 @@ import { InfoIcon, RefreshCcw, Trash2 } from 'lucide-react'
 
 import apiClient from '@/lib/api/client'
 import { resolvePodcastAssetUrl } from '@/lib/api/podcasts'
+import { StudioAudioPlayer } from '@/components/podcasts/StudioAudioPlayer'
 import { EpisodeStatus, FAILED_EPISODE_STATUSES, PodcastEpisode } from '@/lib/types/podcasts'
 import { cn } from '@/lib/utils'
 import {
@@ -257,9 +258,10 @@ export function EpisodeCard({ episode, onDelete, deleting, onRetry, retrying }: 
                 </DialogHeader>
                 <div className="space-y-4 overflow-hidden">
                   {audioSrc ? (
-                    <div className="rounded-md border bg-card p-2">
-                      <audio controls preload="none" src={audioSrc} className="w-full" />
-                    </div>
+                    <StudioAudioPlayer
+                      src={audioSrc}
+                      downloadFilename={`${(episode.name || 'episode').replace(/[^a-z0-9-_]+/gi, '_')}.mp3`}
+                    />
                   ) : audioError ? (
                     <p className="text-sm text-destructive">{audioError}</p>
                   ) : null}
@@ -431,9 +433,10 @@ export function EpisodeCard({ episode, onDelete, deleting, onRetry, retrying }: 
         </div>
 
         {audioSrc ? (
-          <div className="rounded-md border bg-card p-2">
-            <audio controls preload="none" src={audioSrc} className="w-full" />
-          </div>
+          <StudioAudioPlayer
+            src={audioSrc}
+            downloadFilename={`${(episode.name || 'episode').replace(/[^a-z0-9-_]+/gi, '_')}.mp3`}
+          />
         ) : audioError ? (
           <p className="text-sm text-destructive">{audioError}</p>
         ) : null}

@@ -22,6 +22,9 @@ const nextConfig: NextConfig = {
     // This allows larger files to be uploaded through the /api/* rewrite proxy to FastAPI.
     // The Add Source dialog checks against the same value before uploading.
     proxyClientMaxBodySize: `${PROXY_MAX_UPLOAD_MB}mb`,
+    // Increase /api/* rewrite proxy timeout (default is 30s) so long LLM reports,
+    // Briefing Docs, Infographics, and transformations never hit ECONNRESET.
+    proxyTimeout: 600_000,
   } as NextConfig['experimental'],
 
   // API Rewrites: Proxy /api/* requests to FastAPI backend

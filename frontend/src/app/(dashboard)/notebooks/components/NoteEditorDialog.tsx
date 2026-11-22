@@ -176,6 +176,7 @@ export function NoteEditorDialog({ open, onOpenChange, notebookId, note }: NoteE
                       textareaId="note-content"
                       value={field.value}
                       onChange={field.onChange}
+                      preview={isEditing ? 'preview' : 'live'}
                       height={420}
                       placeholder={t('sources.writeNotePlaceholder')}
                       className={cn(

@@ -41,9 +41,18 @@ const TOKEN_COUNT_DEBOUNCE_MS = 400
 interface GeneratePodcastDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  defaultNotebookId?: string
+  focusInstructions?: boolean
+  onPodcastSubmitted?: (episodeName: string) => void
 }
 
-export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDialogProps) {
+export function GeneratePodcastDialog({
+  open,
+  onOpenChange,
+  defaultNotebookId,
+  focusInstructions = false,
+  onPodcastSubmitted,
+}: GeneratePodcastDialogProps) {
   const { t } = useTranslation()
   const { toast } = useToast()
   const [expandedNotebooks, setExpandedNotebooks] = useState<string[]>([])
@@ -51,6 +60,7 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
   const [episodeProfileId, setEpisodeProfileId] = useState<string>('')
   const [episodeName, setEpisodeName] = useState('')
   const [instructions, setInstructions] = useState('')
+  const instructionsRef = useRef<HTMLTextAreaElement | null>(null)
 
   const [isBuildingContext, setIsBuildingContext] = useState(false)
   const [tokenCount, setTokenCount] = useState<number>(0)
@@ -198,8 +208,21 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
   useEffect(() => {
     if (!open) {
       resetState()
+      return
     }
-  }, [open, resetState])
+    if (defaultNotebookId) {
+      setExpandedNotebooks((prev) =>
+        prev.includes(defaultNotebookId) ? prev : [defaultNotebookId, ...prev]
+      )
+    }
+    if (focusInstructions) {
+      const timer = setTimeout(() => {
+        instructionsRef.current?.focus()
+        instructionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 150)
+      return () => clearTimeout(timer)
+    }
+  }, [open, defaultNotebookId, focusInstructions, resetState])
 
   // Generation counter: any newer effect run invalidates in-flight count requests,
   // so a slow, stale response can never overwrite a fresher one.
@@ -363,6 +386,67 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
       return ''
     }
 
+    // Collect all explicitly selected source IDs so focus instructions can pull
+    // exact matching passages via Hybrid Vector RAG (crucial for multi-book notebooks).
+    const selectedSourceIds = new Set<string>()
+    for (const task of tasks) {
+      Object.keys(task.contextConfig.sources || {}).forEach((sid) => selectedSourceIds.add(sid))
+    }
+
+    const trimmedFocus = instructions.trim()
+    if (trimmedFocus && selectedSourceIds.size > 0) {
+      try {
+        const searchRes = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: trimmedFocus.slice(0, 500),
+            type: 'vector',
+            limit: 30,
+            search_sources: true,
+            search_notes: false,
+            minimum_score: 0.2,
+          }),
+        })
+        if (searchRes.ok) {
+          const searchData = await searchRes.json()
+          const hits = Array.isArray(searchData?.results) ? searchData.results : []
+          const focusedBlocks: string[] = []
+          let usedChars = 0
+          const maxFocusedChars = 90000
+          for (const item of hits) {
+            const parentId = String(item.parent_id || '')
+            const itemId = String(item.id || '')
+            if (!selectedSourceIds.has(parentId) && !selectedSourceIds.has(itemId)) {
+              continue
+            }
+            const title = String(item.title || parentId || 'Source')
+            const rawMatches = Array.isArray(item.matches)
+              ? item.matches.join('\n')
+              : String(item.matches || '')
+            const text = rawMatches.trim()
+            if (!text) continue
+            const block = `### Focused Passage from ${title}\n${text}`
+            if (usedChars + block.length > maxFocusedChars && focusedBlocks.length > 0) break
+            focusedBlocks.push(block)
+            usedChars += block.length + 2
+          }
+          if (focusedBlocks.length > 0) {
+            parts.push(
+              `[FOCUSED SOURCE PASSAGES MATCHING CUSTOM PODCAST INSTRUCTIONS: "${trimmedFocus}"]\n` +
+                `(Build the episode primarily around these retrieved sections.)\n\n` +
+                focusedBlocks.join('\n\n')
+            )
+          }
+        }
+      } catch (err) {
+        console.warn('Focused podcast vector search skipped:', err)
+      }
+    }
+
+    const baseBudget = parts.length > 0 ? 150000 : 240000
+    const perTaskBudget = Math.max(25000, Math.floor(baseBudget / tasks.length))
+
     for (const task of tasks) {
       try {
         const response = await chatApi.buildContext({
@@ -371,7 +455,11 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
         })
         const notebookName = notebooks.find((nb) => nb.id === task.notebookId)?.name ?? task.notebookId
         const contextString = JSON.stringify(response.context, null, 2)
-        const snippet = `${t('common.notebookLabel', { name: notebookName })}\n${contextString}`
+        const trimmedContext =
+          contextString.length > perTaskBudget
+            ? contextString.slice(0, perTaskBudget) + '\n... [truncated to fit model context]'
+            : contextString
+        const snippet = `${t('common.notebookLabel', { name: notebookName })}\n${trimmedContext}`
         parts.push(snippet)
       } catch (error) {
         console.error('Failed to build context for notebook', task.notebookId, error)
@@ -380,7 +468,7 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
     }
 
     return parts.join('\n\n')
-  }, [notebooks, selections, t])
+  }, [notebooks, selections, instructions, t])
 
   const handleSubmit = useCallback(async () => {
     if (!selectedEpisodeProfile) {
@@ -438,13 +526,10 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
 
       // mutateAsync resolves only after the mutation's onSuccess handler has
       // awaited the episode list refetch, so it is safe to close immediately.
+      const submittedName = episodeName.trim()
       await generatePodcast.mutateAsync(payload)
 
-      toast({
-        title: t('common.success'),
-        description: t('podcasts.podcastTaskStarted'),
-      })
-
+      onPodcastSubmitted?.(submittedName)
       onOpenChange(false)
       resetState()
     } catch (error) {
@@ -564,16 +649,22 @@ export function GeneratePodcastDialog({ open, onOpenChange }: GeneratePodcastDia
                   </div>
 
                    <div className="space-y-2">
-                    <Label htmlFor="instructions">{t('podcasts.additionalInstructions')}</Label>
+                    <Label htmlFor="instructions">
+                      {t('podcasts.additionalInstructions')} <span className="text-xs font-normal text-muted-foreground">(one-off focus prompt, not saved)</span>
+                    </Label>
                     <Textarea
+                      ref={instructionsRef}
                       id="instructions"
                       name="instructions"
-                      placeholder={t('podcasts.instructionsPlaceholder')}
+                      placeholder="e.g., Focus only on explaining the hypothesis testing sections of the sources..."
                       value={instructions}
                       onChange={(event) => setInstructions(event.target.value)}
-                      className="min-h-[100px] text-xs"
+                      className={`min-h-[110px] text-xs ${focusInstructions ? 'ring-1 ring-primary/60' : ''}`}
                       autoComplete="off"
                     />
+                    <p className="text-[11px] text-muted-foreground">
+                      When specified, matching passages from your selected sources are automatically prioritized for this episode only.
+                    </p>
                   </div>
                 </div>
               )}

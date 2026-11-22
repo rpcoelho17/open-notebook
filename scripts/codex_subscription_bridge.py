@@ -79,9 +79,61 @@ def get_kokoro_model():
 
 DEFAULT_PORT = 8088
 DEFAULT_MODEL = "gpt-6.2-sol"
-DEFAULT_REASONING_EFFORT = os.environ.get("CODEX_REASONING_EFFORT", "none")
+DEFAULT_REASONING_EFFORT = os.environ.get("CODEX_REASONING_EFFORT", "low")
 DEFAULT_MAX_CONTEXT_TOKENS = None  # None = model max (capped to Codex's 1M-char transport limit)
 CODEX_HARD_MAX_CHARS = 980_000
+
+
+def _load_codex_model_efforts() -> dict[str, list[str]]:
+    """Read supported reasoning effort levels per model from ~/.codex/models_cache.json."""
+    mapping: dict[str, list[str]] = {}
+    try:
+        cache_path = Path.home() / ".codex" / "models_cache.json"
+        if cache_path.is_file():
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            for m in data.get("models") or []:
+                slug = m.get("slug")
+                levels = [
+                    x.get("effort")
+                    for x in (m.get("supported_reasoning_levels") or [])
+                    if x.get("effort")
+                ]
+                if slug and levels:
+                    mapping[slug] = levels
+    except Exception:
+        pass
+    return mapping
+
+
+CODEX_MODEL_EFFORTS = _load_codex_model_efforts()
+
+
+def normalize_effort_for_model(model: str, effort: str) -> str:
+    """Ensure reasoning effort is accepted by the target Codex model (never send 'none' if unsupported)."""
+    eff = (effort or "low").strip().lower()
+    supported = CODEX_MODEL_EFFORTS.get(model)
+    if supported:
+        if eff in supported:
+            return eff
+        if eff in ("none", "minimal", "off"):
+            return supported[0]  # lowest supported effort (e.g. 'low')
+        return supported[0]
+    # Safe fallback when model isn't in cache: most GPT-6/Codex models require >= 'low'
+    if eff in ("none", "minimal", "off"):
+        return "low"
+    return eff
+CLAUDE_MODEL_ALIASES = {"sonnet", "opus", "haiku", "fable"}
+CLAUDE_MODELS = [
+    "claude-sonnet-5-5",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "sonnet",
+    "opus",
+    "haiku",
+]
+CLAUDE_SUPPORTED_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 GEMINI_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3.8-flash",
@@ -97,7 +149,149 @@ SUPPORTED_MODELS = [
     "gpt-6.2-astra",
     "gpt-6.1-sol",
     "gpt-6-sol",
-] + GEMINI_MODELS
+] + CLAUDE_MODELS + GEMINI_MODELS
+
+
+def detect_provider(model: str) -> str:
+    """Route a model name generically to 'claude', 'gemini', or 'codex'."""
+    m = (model or "").strip().lower()
+    if m.startswith("claude-") or m in CLAUDE_MODEL_ALIASES:
+        return "claude"
+    if m in GEMINI_MODELS or m.startswith("gemini-"):
+        return "gemini"
+    return "codex"
+
+
+def normalize_effort_for_provider(provider: str, model: str, effort: str) -> str:
+    """Normalize reasoning/thinking effort safely for Codex, Claude Code, or Gemini."""
+    eff = (effort or "low").strip().lower()
+    if provider == "claude":
+        if eff in CLAUDE_SUPPORTED_EFFORTS:
+            return eff
+        if eff in ("none", "minimal", "off"):
+            return "low"
+        return "low"
+    if provider == "codex":
+        return normalize_effort_for_model(model, eff)
+    return eff
+
+
+def find_claude_binary() -> str | None:
+    """Find installed Claude Code CLI binary (claude.exe / claude)."""
+    for name in ("claude.exe", "claude.cmd", "claude"):
+        for p in os.environ.get("PATH", "").split(os.pathsep):
+            candidate = Path(p) / name
+            if candidate.is_file():
+                return str(candidate)
+    local_bin = Path.home() / ".local" / "bin" / "claude.exe"
+    if local_bin.is_file():
+        return str(local_bin)
+    return None
+
+
+CLAUDE_BIN = find_claude_binary()
+if CLAUDE_BIN:
+    print(f"[Codex Bridge] Found Claude Code CLI binary: {CLAUDE_BIN}")
+
+
+def stream_claude_cli(model: str, effort: str, prompt: str, timeout: float = 240.0):
+    """Run Claude Code CLI headless (`claude -p`) with stream-json and yield live text deltas.
+
+    Strictly checks `is_api_error_message` / `is_error` so auth or API errors raise
+    RuntimeError (returning HTTP 502) rather than ever leaking raw error JSON.
+    """
+    if not CLAUDE_BIN:
+        raise RuntimeError(
+            "Claude Code CLI not installed. Install Claude Code and run `claude /login`."
+        )
+    safe_effort = normalize_effort_for_provider("claude", model, effort)
+    cmd = [
+        CLAUDE_BIN,
+        "-p",
+        "--model",
+        model,
+        "--effort",
+        safe_effort,
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+    except Exception:
+        pass
+
+    yielded_any = False
+    assistant_fallback_chunks: list[str] = []
+    result_fallback_text = ""
+    api_error_msg: str | None = None
+
+    for raw_line in proc.stdout:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        ev_type = ev.get("type")
+
+        # True live partial token deltas
+        if ev_type == "stream_event":
+            inner = ev.get("event") or {}
+            if inner.get("type") == "content_block_delta":
+                delta = inner.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    text = delta.get("text") or ""
+                    if text:
+                        yielded_any = True
+                        yield text
+        elif ev_type == "assistant":
+            if ev.get("is_api_error_message") or ev.get("error"):
+                msg_blocks = (ev.get("message") or {}).get("content") or []
+                err_txt = " ".join(
+                    str(b.get("text") or "") for b in msg_blocks if isinstance(b, dict)
+                ).strip()
+                api_error_msg = err_txt or str(ev.get("error") or "Claude API error")
+                continue
+            msg_blocks = (ev.get("message") or {}).get("content") or []
+            for b in msg_blocks:
+                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
+                    assistant_fallback_chunks.append(str(b["text"]))
+        elif ev_type == "result":
+            if ev.get("is_error"):
+                api_error_msg = str(ev.get("result") or api_error_msg or "Claude Code returned an error")
+            elif isinstance(ev.get("result"), str) and ev.get("result"):
+                result_fallback_text = ev["result"]
+
+    rc = proc.wait(timeout=timeout)
+    if api_error_msg and not yielded_any:
+        raise RuntimeError(f"Claude Code error: {api_error_msg}")
+    if not yielded_any:
+        fallback = "".join(assistant_fallback_chunks).strip() or result_fallback_text.strip()
+        if fallback:
+            yielded_any = True
+            yield fallback
+    if rc != 0 and not yielded_any:
+        err_text = (proc.stderr.read() if proc.stderr else "").strip()
+        raise RuntimeError(
+            err_text or api_error_msg or f"Claude Code exited with code {rc} (run `claude` and `/login`)"
+        )
 
 def find_gemini_binary() -> str | None:
     """Find installed gemini.cmd / gemini CLI."""
@@ -501,11 +695,12 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                 + final_prompt[-tail_keep:]
             )
 
-        # Route Gemini models to @google/gemini-cli (OAuth subscription), GPT models to Codex app-server
-        effort = req.get("reasoning_effort") or DEFAULT_REASONING_EFFORT
+        # Generic provider routing: Codex (gpt-*), Claude Code (claude-* / sonnet / opus / haiku), Gemini CLI (gemini-*)
+        provider = detect_provider(model)
+        raw_effort = req.get("reasoning_effort") or DEFAULT_REASONING_EFFORT
+        effort = normalize_effort_for_provider(provider, model, raw_effort)
         resp_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_time = int(time.time())
-        is_gemini = model in GEMINI_MODELS or model.startswith("gemini-")
 
         if is_stream:
             self.send_response(200)
@@ -526,11 +721,12 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
             try:
-                stream_iter = (
-                    stream_gemini_cli(model, final_prompt)
-                    if is_gemini
-                    else APP_SERVER.stream_turn(model, effort, final_prompt)
-                )
+                if provider == "gemini":
+                    stream_iter = stream_gemini_cli(model, final_prompt)
+                elif provider == "claude":
+                    stream_iter = stream_claude_cli(model, effort, final_prompt)
+                else:
+                    stream_iter = APP_SERVER.stream_turn(model, effort, final_prompt)
                 for delta in stream_iter:
                     chunk_content = {
                         "id": resp_id,
@@ -544,7 +740,7 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
             except BrokenPipeError:
                 return
             except Exception as e:
-                print(f"[Codex Bridge] Streaming error ({model}): {e}")
+                print(f"[Codex Bridge] Streaming error ({provider}/{model}): {e}")
 
             try:
                 chunk_end = {
@@ -561,16 +757,23 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                 pass
             return
 
-        # Non-streaming: route Gemini CLI or warm Codex app-server
+        # Non-streaming: unified routing across Gemini CLI, Claude Code CLI, and Codex app-server
         assistant_text = ""
         input_tokens = 0
         output_tokens = 0
-        if is_gemini:
+        if provider in ("gemini", "claude"):
             try:
-                assistant_text = "".join(stream_gemini_cli(model, final_prompt)).strip()
+                stream_iter = (
+                    stream_gemini_cli(model, final_prompt)
+                    if provider == "gemini"
+                    else stream_claude_cli(model, effort, final_prompt)
+                )
+                assistant_text = "".join(stream_iter).strip()
+                if not assistant_text:
+                    raise RuntimeError(f"{provider} model '{model}' returned empty output.")
             except Exception as e:
-                body = json.dumps({"error": str(e)}).encode()
-                self.send_response(500)
+                body = json.dumps({"error": {"message": str(e), "type": "bridge_error"}}).encode()
+                self.send_response(502)
                 self._send_cors_headers()
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -623,6 +826,7 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                     self.wfile.write(json.dumps({"error": f"Failed to execute codex: {str(e)}"}).encode())
                     return
 
+                exec_errors = []
                 for line in stdout_data.splitlines():
                     line = line.strip()
                     if not line:
@@ -638,10 +842,22 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                             usage = event.get("usage", {})
                             input_tokens += usage.get("input_tokens", 0)
                             output_tokens += usage.get("output_tokens", 0)
+                        elif ev_type in ("error", "turn.failed"):
+                            err_payload = event.get("error") or event.get("message") or line
+                            exec_errors.append(str(err_payload))
                     except Exception:
                         continue
-                if not assistant_text and stdout_data:
-                    assistant_text = stdout_data.strip()
+                if not assistant_text:
+                    err_detail = "; ".join(exec_errors) or f"Codex exited with code {proc.returncode} without producing assistant output"
+                    print(f"[Codex Bridge] codex exec failed for model={model} effort={effort}: {err_detail}")
+                    self.send_response(502)
+                    self._send_cors_headers()
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(
+                        json.dumps({"error": {"message": err_detail, "type": "bridge_error"}}).encode()
+                    )
+                    return
 
         # Standard JSON format
         resp = {
@@ -757,6 +973,20 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
 
         provider = (req.get("provider") or req.get("model") or "kokoro").lower()
         speed = float(req.get("speed") or 1.0)
+        response_format = (req.get("response_format") or "wav").strip().lower()
+
+        openai_to_kokoro = {
+            "nova": "af_heart",
+            "alloy": "am_michael",
+            "echo": "am_fenrir",
+            "shimmer": "af_bella",
+            "ash": "bm_george",
+            "onyx": "am_adam",
+            "fable": "bf_emma",
+            "sage": "af_sky",
+            "coral": "af_sarah",
+            "default": "af_heart",
+        }
 
         try:
             if "edge" in provider:
@@ -775,14 +1005,55 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                 content_type = "audio/mpeg"
             else:
                 import soundfile as sf
-                voice = req.get("voice") or "af_heart"
+                raw_voice = (req.get("voice") or "af_heart").strip()
+                voice = openai_to_kokoro.get(raw_voice.lower(), raw_voice)
                 lang = "en-gb" if voice.startswith("b") else "en-us"
                 kokoro = get_kokoro_model()
                 samples, sample_rate = kokoro.create(text, voice=voice, speed=speed, lang=lang)
                 buf = io.BytesIO()
                 sf.write(buf, samples, sample_rate, format="WAV")
-                audio_bytes = buf.getvalue()
-                content_type = "audio/wav"
+                wav_bytes = buf.getvalue()
+
+                if response_format == "mp3":
+                    ffmpeg_exe = None
+                    try:
+                        import imageio_ffmpeg
+                        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                    except Exception:
+                        ffmpeg_exe = shutil.which("ffmpeg")
+                    if ffmpeg_exe:
+                        conv = subprocess.run(
+                            [
+                                ffmpeg_exe,
+                                "-hide_banner",
+                                "-loglevel",
+                                "error",
+                                "-f",
+                                "wav",
+                                "-i",
+                                "pipe:0",
+                                "-f",
+                                "mp3",
+                                "-b:a",
+                                "128k",
+                                "pipe:1",
+                            ],
+                            input=wav_bytes,
+                            capture_output=True,
+                            timeout=30,
+                        )
+                        if conv.returncode == 0 and conv.stdout:
+                            audio_bytes = conv.stdout
+                            content_type = "audio/mpeg"
+                        else:
+                            audio_bytes = wav_bytes
+                            content_type = "audio/wav"
+                    else:
+                        audio_bytes = wav_bytes
+                        content_type = "audio/wav"
+                else:
+                    audio_bytes = wav_bytes
+                    content_type = "audio/wav"
 
             self.send_response(200)
             self._send_cors_headers()

@@ -45,8 +45,8 @@ function hasActiveEpisodes(episodes: PodcastEpisode[]) {
   })
 }
 
-export function usePodcastEpisodes(options?: { autoRefresh?: boolean }) {
-  const { autoRefresh = true } = options ?? {}
+export function usePodcastEpisodes(options?: { autoRefresh?: boolean; forcePoll?: boolean }) {
+  const { autoRefresh = true, forcePoll = false } = options ?? {}
 
   const query = useQuery({
     queryKey: QUERY_KEYS.podcastEpisodes,
@@ -55,13 +55,16 @@ export function usePodcastEpisodes(options?: { autoRefresh?: boolean }) {
       if (!autoRefresh) {
         return false
       }
+      if (forcePoll) {
+        return 3_000
+      }
 
       const data = current.state.data as PodcastEpisode[] | undefined
       if (!data || data.length === 0) {
         return false
       }
 
-      return hasActiveEpisodes(data) ? 15_000 : false
+      return hasActiveEpisodes(data) ? 4_000 : false
     },
   })
 
@@ -403,8 +406,18 @@ export function useGeneratePodcast() {
     mutationFn: (payload: PodcastGenerationRequest) =>
       podcastsApi.generatePodcast(payload),
     onSuccess: async (response) => {
-      // Immediately refetch to show the new episode
+      // Immediately refetch AND schedule short follow-up refetches because the
+      // background worker creates the PodcastEpisode record ~1-3s after enqueue.
       await queryClient.refetchQueries({ queryKey: QUERY_KEYS.podcastEpisodes })
+      setTimeout(() => {
+        void queryClient.refetchQueries({ queryKey: QUERY_KEYS.podcastEpisodes })
+      }, 1500)
+      setTimeout(() => {
+        void queryClient.refetchQueries({ queryKey: QUERY_KEYS.podcastEpisodes })
+      }, 4500)
+      setTimeout(() => {
+        void queryClient.refetchQueries({ queryKey: QUERY_KEYS.podcastEpisodes })
+      }, 9000)
       toast({
         title: t('podcasts.generationStarted'),
         description: t('podcasts.generationStartedDesc', { name: response.episode_name }),

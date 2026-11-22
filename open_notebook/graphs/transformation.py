@@ -14,6 +14,10 @@ from open_notebook.exceptions import (
 )
 from open_notebook.utils import clean_thinking_content
 from open_notebook.utils.error_classifier import classify_error
+from open_notebook.utils.source_context import (
+    looks_like_provider_error_dump,
+    prepare_source_for_summary,
+)
 from open_notebook.utils.text_utils import extract_text_content
 
 
@@ -56,6 +60,14 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
             data={**state, "instructions": instructions}
         )
         content_str = str(content) if content else ""
+        # Condense massive sources (e.g. 800k+ char GitHub repos or textbooks) smartly
+        # so every model provider (Codex, Claude Code, Anthropic, Gemini, Ollama) gets
+        # the full Overview/TOC + prioritized sections without overflowing context.
+        if len(content_str) > 320_000:
+            src_title = (source.title if source and source.title else "Source")
+            content_str = prepare_source_for_summary(
+                src_title, content_str, max_chars=320_000
+            )
         payload = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=content_str),
@@ -89,6 +101,13 @@ async def run_transformation(state: dict, config: RunnableConfig) -> dict:
                 "The model returned no usable text for the transformation after "
                 "removing thinking content. Try a shorter transformation or a "
                 "different model."
+            )
+
+        error_dump_reason = looks_like_provider_error_dump(cleaned_content)
+        if error_dump_reason:
+            raise IncompleteGenerationError(
+                f"The model failed during transformation ({error_dump_reason}). "
+                "Check your model provider/bridge configuration and retry."
             )
 
         if source:

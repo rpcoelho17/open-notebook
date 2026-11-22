@@ -1,7 +1,9 @@
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
+from langchain_core.messages import HumanMessage, SystemMessage
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from api.models import (
     DefaultPromptResponse,
@@ -13,11 +15,48 @@ from api.models import (
     TransformationUpdate,
 )
 from open_notebook.ai.models import Model
+from open_notebook.ai.provision import provision_langchain_model
 from open_notebook.domain.transformation import DefaultPrompts, Transformation
 from open_notebook.exceptions import InvalidInputError, OpenNotebookError
 from open_notebook.graphs.transformation import graph as transformation_graph
+from open_notebook.utils import clean_thinking_content
+from open_notebook.utils.source_context import (
+    build_notebook_studio_context,
+    looks_like_provider_error_dump,
+)
+from open_notebook.utils.text_utils import extract_text_content
 
 router = APIRouter()
+
+
+class StudioGenerateRequest(BaseModel):
+    notebook_id: str = Field(..., description="Notebook ID to read sources from")
+    source_ids: Optional[List[str]] = Field(
+        None, description="Optional subset of source IDs; defaults to all notebook sources"
+    )
+    prompt: str = Field(..., description="Task instructions for the Studio output")
+    system_prompt: Optional[str] = Field(
+        None, description="Optional system prompt override"
+    )
+    model_id: Optional[str] = Field(
+        None, description="Optional explicit Open Notebook model ID"
+    )
+    max_source_chars: int = Field(
+        220_000,
+        ge=8_000,
+        le=400_000,
+        description="Maximum character budget for assembled source content",
+    )
+    focus_query: Optional[str] = Field(
+        None,
+        description="Optional custom focus prompt used to boost relevant vector passages for large sources",
+    )
+
+
+class StudioGenerateResponse(BaseModel):
+    output: str
+    source_count: int
+    model_name: str
 
 
 def _transformation_response(transformation: Transformation) -> TransformationResponse:
@@ -88,6 +127,78 @@ async def create_transformation(transformation_data: TransformationCreate):
         raise HTTPException(
             status_code=500, detail=f"Error creating transformation: {str(e)}"
         )
+
+
+@router.post("/transformations/studio-generate", response_model=StudioGenerateResponse)
+async def studio_generate(request: StudioGenerateRequest):
+    """Generate a Studio report, Dense Summary, or Infographic using any configured Open Notebook model.
+
+    Model-agnostic: works identically with Codex, Claude Code, Anthropic, OpenAI,
+    Gemini, and Ollama models via Open Notebook's unified model provisioner, and
+    reads real source full_text directly (never stale or corrupted insights).
+    """
+    try:
+        source_context, source_count = await build_notebook_studio_context(
+            notebook_id=request.notebook_id,
+            source_ids=request.source_ids,
+            max_total_chars=request.max_source_chars,
+            focus_query=request.focus_query,
+        )
+        if not source_context.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Selected sources have no extracted text content yet.",
+            )
+
+        sys_text = (
+            request.system_prompt
+            or "You are an expert research analyst. Write clear, thorough, well-structured Markdown grounded strictly in the provided sources. Start with a concise # Title line."
+        )
+        user_text = f"{request.prompt}\n\nSOURCES:\n{source_context}"
+        payload = [
+            SystemMessage(content=sys_text),
+            HumanMessage(content=user_text),
+        ]
+
+        chain = await provision_langchain_model(
+            user_text,
+            request.model_id,
+            "transformation",
+            max_tokens=8192,
+        )
+        response = await chain.ainvoke(payload)
+        raw_output = extract_text_content(response.content)
+        cleaned = clean_thinking_content(raw_output).strip()
+
+        error_dump = looks_like_provider_error_dump(cleaned)
+        if error_dump:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Model generation failed ({error_dump}).",
+            )
+        if not cleaned:
+            raise HTTPException(
+                status_code=502,
+                detail="Model returned empty output.",
+            )
+
+        model_name = str(
+            getattr(chain, "model_name", None)
+            or getattr(chain, "model", None)
+            or "configured-model"
+        )
+        return StudioGenerateResponse(
+            output=cleaned,
+            source_count=source_count,
+            model_name=model_name,
+        )
+    except HTTPException:
+        raise
+    except OpenNotebookError:
+        raise
+    except Exception as e:
+        logger.error(f"Studio generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Studio generation failed: {str(e)}")
 
 
 @router.post("/transformations/execute", response_model=TransformationExecuteResponse)
