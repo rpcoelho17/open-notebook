@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { usePathname } from 'next/navigation'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -32,8 +33,15 @@ interface SourceInsightDialogProps {
 export function SourceInsightDialog({ open, onOpenChange, insight, onDelete, notebookId }: SourceInsightDialogProps) {
   const { t } = useTranslation()
   const { openModal } = useModalManager()
+  const pathname = usePathname()
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+
+  // Detect active notebook from route (/notebooks/<id>) when no notebookId prop was passed
+  const routeNotebookId = useMemo(() => {
+    const match = pathname?.match(/^\/notebooks\/([^/]+)/)
+    return match ? decodeURIComponent(match[1]) : undefined
+  }, [pathname])
 
   // Ensure insight ID has 'source_insight:' prefix for API calls
   const insightIdWithPrefix = insight?.id
@@ -150,9 +158,17 @@ export function SourceInsightDialog({ open, onOpenChange, insight, onDelete, not
         {!showDeleteConfirm && !isLoading && !isError && displayInsight && (
           <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">
             {notebookId ? (
-              <SaveAsNoteButton insightId={insightIdWithPrefix} notebookId={notebookId} />
+              <SaveAsNoteButton
+                insightId={insightIdWithPrefix}
+                notebookId={notebookId}
+                onSaved={() => onOpenChange(false)}
+              />
             ) : (
-              <SaveAsNoteWithPicker insightId={insightIdWithPrefix} />
+              <SaveAsNoteWithPicker
+                insightId={insightIdWithPrefix}
+                defaultNotebookId={routeNotebookId}
+                onSaved={() => onOpenChange(false)}
+              />
             )}
           </div>
         )}
@@ -161,15 +177,33 @@ export function SourceInsightDialog({ open, onOpenChange, insight, onDelete, not
   )
 }
 
-function SaveAsNoteButton({ insightId, notebookId }: { insightId: string; notebookId: string }) {
+function SaveAsNoteButton({
+  insightId,
+  notebookId,
+  onSaved,
+}: {
+  insightId: string
+  notebookId: string
+  onSaved?: () => void
+}) {
   const { t } = useTranslation()
   const saveAsNote = useSaveInsightAsNote()
+
+  const handleSave = async () => {
+    if (!notebookId) return
+    try {
+      await saveAsNote.mutateAsync({ insightId, notebookId })
+      onSaved?.()
+    } catch {
+      // Error toast is already displayed by useSaveInsightAsNote
+    }
+  }
 
   return (
     <Button
       size="sm"
       className="gap-1"
-      onClick={() => saveAsNote.mutate({ insightId, notebookId })}
+      onClick={handleSave}
       disabled={!notebookId || saveAsNote.isPending}
     >
       <StickyNote className="h-3 w-3" />
@@ -178,14 +212,27 @@ function SaveAsNoteButton({ insightId, notebookId }: { insightId: string; notebo
   )
 }
 
-// Mounted only without a notebook context, so the notebooks query runs only when a pick is needed
-function SaveAsNoteWithPicker({ insightId }: { insightId: string }) {
+// Mounted only without an explicit notebookId prop, pre-selecting the active route notebook when available
+function SaveAsNoteWithPicker({
+  insightId,
+  defaultNotebookId,
+  onSaved,
+}: {
+  insightId: string
+  defaultNotebookId?: string
+  onSaved?: () => void
+}) {
   const { t } = useTranslation()
   const { data: notebooks, isLoading } = useNotebooks(false) // false = not archived
   const [pickedId, setPickedId] = useState('')
 
-  // Preselect when there is only one notebook to choose from
-  const notebookId = pickedId || (notebooks?.length === 1 ? notebooks[0].id : '')
+  // Preselect active route notebook if it exists in the list, or fall back when only one notebook exists
+  const matchedRouteId =
+    defaultNotebookId && notebooks?.some((nb) => nb.id === defaultNotebookId)
+      ? defaultNotebookId
+      : ''
+  const notebookId =
+    pickedId || matchedRouteId || (notebooks?.length === 1 ? notebooks[0].id : '')
 
   if (!isLoading && !notebooks?.length) {
     return <p className="text-sm text-muted-foreground">{t('sources.noNotebooksFound')}</p>
@@ -203,7 +250,7 @@ function SaveAsNoteWithPicker({ insightId }: { insightId: string }) {
           ))}
         </SelectContent>
       </Select>
-      <SaveAsNoteButton insightId={insightId} notebookId={notebookId} />
+      <SaveAsNoteButton insightId={insightId} notebookId={notebookId} onSaved={onSaved} />
     </>
   )
 }

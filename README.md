@@ -46,7 +46,7 @@
 
 This fork extends [Open Notebook](https://github.com/lfnovo/open-notebook) with **built-in, real-time Speech-to-Speech voice chat grounded directly in your documents**, paired with a streamlined dark 3-column workspace:
 
-- **🗣️ Talk Directly to Your Documents:** Click the voice icon inside any notebook to ask spoken questions grounded in the full text of your selected sources and notes, with every voice turn saved automatically to your chat history.
+- **🗣️ Talk Directly to Your Documents:** Click the voice icon inside the chat input bar to ask spoken questions grounded in your selected sources and notes, with **real-time word-by-word highlighting synced to speech**, and every voice turn saved automatically to your chat history.
 - **🎛️ Simple 2-Option Speech-to-Speech Switcher** (accessible from the chat **Sliders** menu or **⚙ Settings**):
   1. **Gemini Live (Default):** Native speech-to-speech powered by Gemini Live (`gemini-2.5-flash-native-audio-latest`) via a server-side WebSocket proxy (keeps your API key in `.env`). Includes a 1-click toggle between **Press ↑ to send** *(default — dictate, review/edit, then send)* and **Hands-free** conversation.
   2. **Local Voice + Chat Model:** Local `faster-whisper` speech-to-text + your chosen streaming chat model + local **Kokoro-82M** neural text-to-speech, plus a **Read Aloud** speaker button on every reply and overview.

@@ -219,6 +219,10 @@ export function ChatColumn({
   const [isStreamingVoiceReply, setIsStreamingVoiceReply] = useState(false)
   const [isAiSpeaking, setIsAiSpeaking] = useState(false)
   const [streamingReplyText, setStreamingReplyText] = useState('')
+  const [geminiRevealedWords, setGeminiRevealedWords] = useState<{
+    before: string
+    active: string
+  } | null>(null)
   const [voiceTurns, setVoiceTurns] = useState<InlineVoiceTurn[]>([])
 
   // Session manager modal & composer sliders popover
@@ -276,6 +280,16 @@ export function ChatColumn({
   const geminiUserBufRef = useRef('')
   const geminiUserCommittedRef = useRef(false)
   const geminiAiBufRef = useRef('')
+  const geminiTimedWordsRef = useRef<Array<{ token: string; audioTimeSec: number }>>([])
+  const geminiTurnStartAudioTimeRef = useRef<number | null>(null)
+  const geminiCumAudioSecRef = useRef(0)
+  const geminiRevealRafRef = useRef<number | null>(null)
+  const geminiLastRevealIdxRef = useRef(-1)
+  const geminiPendingCommitRef = useRef<{
+    userText: string
+    alreadyCommitted: boolean
+    aiText: string
+  } | null>(null)
   const geminiSpeakingTimerRef = useRef<number | null>(null)
   const geminiAiSpeakingRef = useRef(false)
   const geminiEchoTailUntilRef = useRef(0)
@@ -722,6 +736,74 @@ export function ChatColumn({
     }
   }, [input])
 
+  const flushPendingGeminiReveal = useCallback(() => {
+    if (geminiRevealRafRef.current !== null) {
+      window.cancelAnimationFrame(geminiRevealRafRef.current)
+      geminiRevealRafRef.current = null
+    }
+    geminiTimedWordsRef.current = []
+    geminiTurnStartAudioTimeRef.current = null
+    geminiCumAudioSecRef.current = 0
+    geminiLastRevealIdxRef.current = -1
+    setGeminiRevealedWords(null)
+    setStreamingReplyText('')
+
+    const pending = geminiPendingCommitRef.current
+    if (pending) {
+      geminiPendingCommitRef.current = null
+      if (pending.userText && !pending.alreadyCommitted) {
+        appendVoiceTurn({
+          id: `voice-user-${Date.now()}`,
+          type: 'human',
+          content: pending.userText,
+        })
+      }
+      if (pending.aiText) {
+        appendVoiceTurn({
+          id: `voice-ai-${Date.now() + 1}`,
+          type: 'ai',
+          content: pending.aiText,
+        })
+      }
+    }
+  }, [appendVoiceTurn])
+
+  const startGeminiRevealLoop = useCallback(() => {
+    if (geminiRevealRafRef.current !== null) return
+    const tick = () => {
+      const pCtx = geminiPlayCtxRef.current
+      const turnStart = geminiTurnStartAudioTimeRef.current
+      const words = geminiTimedWordsRef.current
+
+      if (pCtx && turnStart !== null && words.length > 0) {
+        const playedSec = Math.max(0, pCtx.currentTime - turnStart)
+        let idx = -1
+        for (let i = 0; i < words.length; i++) {
+          if (words[i].audioTimeSec <= playedSec) {
+            idx = i
+          } else {
+            break
+          }
+        }
+        if (idx >= 0 && idx !== geminiLastRevealIdxRef.current) {
+          geminiLastRevealIdxRef.current = idx
+          let before = ''
+          for (let i = 0; i < idx; i++) {
+            before += words[i].token
+          }
+          setGeminiRevealedWords({ before, active: words[idx].token })
+        }
+      }
+
+      if (geminiAiSpeakingRef.current || geminiPendingCommitRef.current !== null) {
+        geminiRevealRafRef.current = window.requestAnimationFrame(tick)
+      } else {
+        geminiRevealRafRef.current = null
+      }
+    }
+    geminiRevealRafRef.current = window.requestAnimationFrame(tick)
+  }, [])
+
   // Stop scheduled Gemini Live audio buffers (used on barge-in, Stop button, or disconnect)
   const stopGeminiLivePlayback = useCallback(() => {
     if (geminiSpeakingTimerRef.current) {
@@ -746,8 +828,9 @@ export function ChatColumn({
         t.enabled = true
       })
     }
+    flushPendingGeminiReveal()
     setIsAiSpeaking(false)
-  }, [])
+  }, [flushPendingGeminiReveal])
 
   const stopGeminiLiveSession = useCallback(() => {
     voiceActiveRef.current = false
@@ -1054,6 +1137,10 @@ ${notesText.trim() || 'No notes available.'}
             }
           } else if (msg.type === 'output_transcript' && msg.text) {
             if (!geminiAiSpeakingRef.current) {
+              // If a previous turn's reveal was still pending commit, flush it cleanly first
+              if (geminiPendingCommitRef.current) {
+                flushPendingGeminiReveal()
+              }
               geminiAiSpeakingRef.current = true
               if (!isManualMode) {
                 if (handsFreeStream) {
@@ -1074,9 +1161,23 @@ ${notesText.trim() || 'No notes available.'}
               }
             }
             geminiAiBufRef.current += msg.text
-            setStreamingReplyText(geminiAiBufRef.current)
+            // Stamp incoming transcript tokens with the current scheduled Web Audio offset
+            // (empirically aligned within ~100-200ms of actual spoken playback)
+            const chunkTokens = String(msg.text).match(/\s*\S+/g) || []
+            const list = geminiTimedWordsRef.current
+            const baseSec = Math.max(0, geminiCumAudioSecRef.current - 0.14)
+            let lastTime = list.length > 0 ? list[list.length - 1].audioTimeSec : -0.18
+            for (let ti = 0; ti < chunkTokens.length; ti++) {
+              const stamped = Math.max(baseSec + ti * 0.18, lastTime + 0.12)
+              list.push({ token: chunkTokens[ti], audioTimeSec: stamped })
+              lastTime = stamped
+            }
+            startGeminiRevealLoop()
           } else if (msg.type === 'audio' && msg.data) {
             if (!geminiAiSpeakingRef.current) {
+              if (geminiPendingCommitRef.current) {
+                flushPendingGeminiReveal()
+              }
               geminiAiSpeakingRef.current = true
               if (!isManualMode) {
                 if (handsFreeStream) {
@@ -1107,9 +1208,15 @@ ${notesText.trim() || 'No notes available.'}
               srcNode.buffer = audioBuf
               srcNode.connect(pCtx.destination)
               const startAt = Math.max(pCtx.currentTime, geminiNextPlayTimeRef.current)
+              if (geminiTurnStartAudioTimeRef.current === null) {
+                geminiTurnStartAudioTimeRef.current = startAt
+                geminiCumAudioSecRef.current = 0
+              }
               srcNode.start(startAt)
               geminiNextPlayTimeRef.current = startAt + audioBuf.duration
+              geminiCumAudioSecRef.current += audioBuf.duration
               geminiActiveSourcesRef.current.push(srcNode)
+              startGeminiRevealLoop()
               srcNode.onended = () => {
                 geminiActiveSourcesRef.current = geminiActiveSourcesRef.current.filter(
                   (n) => n !== srcNode
@@ -1126,6 +1233,8 @@ ${notesText.trim() || 'No notes available.'}
                 geminiEchoTailUntilRef.current = Date.now() + 700
                 geminiLastVoiceActivityRef.current = 0
                 setIsAiSpeaking(false)
+                // Audio finished playing: cleanly swap live word-by-word reveal into final chat message
+                flushPendingGeminiReveal()
                 if (isManualMode) {
                   isRespondingRef.current = false
                   setIsStreamingVoiceReply(false)
@@ -1142,7 +1251,27 @@ ${notesText.trim() || 'No notes available.'}
           } else if (msg.type === 'interrupted') {
             stopGeminiLivePlayback()
           } else if (msg.type === 'turn_complete') {
-            if (!geminiSpeakingTimerRef.current) {
+            const audioStillPlaying = Boolean(geminiSpeakingTimerRef.current)
+            const userText = geminiUserBufRef.current.trim()
+            const alreadyCommitted = geminiUserCommittedRef.current
+            const aiText = geminiAiBufRef.current.trim()
+            geminiUserBufRef.current = ''
+            geminiUserCommittedRef.current = false
+            geminiAiBufRef.current = ''
+            if (!isManualMode) {
+              setInput('')
+            }
+
+            // Persist to DB immediately so the turn is never lost
+            if (aiText) {
+              void persistVoiceTurnToDb(userText || '(Voice message)', aiText)
+            }
+
+            if (audioStillPlaying && aiText) {
+              // Keep sequential word-by-word reveal running in sync until the audio finishes!
+              geminiPendingCommitRef.current = { userText, alreadyCommitted, aiText }
+              startGeminiRevealLoop()
+            } else {
               geminiAiSpeakingRef.current = false
               geminiEchoTailUntilRef.current = Date.now() + 700
               geminiLastVoiceActivityRef.current = 0
@@ -1157,24 +1286,11 @@ ${notesText.trim() || 'No notes available.'}
                   t.enabled = true
                 })
               }
-            }
-            const userText = geminiUserBufRef.current.trim()
-            const alreadyCommitted = geminiUserCommittedRef.current
-            const aiText = geminiAiBufRef.current.trim()
-            geminiUserBufRef.current = ''
-            geminiUserCommittedRef.current = false
-            geminiAiBufRef.current = ''
-            if (!isManualMode) {
-              setInput('')
-            }
-            setStreamingReplyText('')
-            setIsStreamingVoiceReply(false)
-            if (aiText) {
-              if (userText && !alreadyCommitted) {
-                appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: userText })
-              }
-              appendVoiceTurn({ id: `voice-ai-${Date.now() + 1}`, type: 'ai', content: aiText })
-              void persistVoiceTurnToDb(userText || '(Voice message)', aiText)
+              setIsStreamingVoiceReply(false)
+              geminiPendingCommitRef.current = aiText
+                ? { userText, alreadyCommitted, aiText }
+                : null
+              flushPendingGeminiReveal()
             }
           } else if (msg.type === 'error') {
             toast.error(`Gemini Live: ${msg.message || 'Connection error'}`)
@@ -1209,6 +1325,8 @@ ${notesText.trim() || 'No notes available.'}
     startInlineVoiceMode,
     stopGeminiLivePlayback,
     stopGeminiLiveSession,
+    flushPendingGeminiReveal,
+    startGeminiRevealLoop,
     appendVoiceTurn,
     persistVoiceTurnToDb,
   ])
@@ -1399,10 +1517,10 @@ ${notesText.trim() || 'No notes available.'}
     const totalCount = chat.messages.length + voiceTurns.length
     const prevCount = prevTotalMessagesRef.current
     prevTotalMessagesRef.current = totalCount
-    if (totalCount > prevCount || streamingReplyText) {
+    if (totalCount > prevCount || streamingReplyText || geminiRevealedWords) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [chat.messages.length, voiceTurns.length, streamingReplyText])
+  }, [chat.messages.length, voiceTurns.length, streamingReplyText, geminiRevealedWords])
 
   // Save any summary or chat reply (optionally paired with the user's question) as a 1-line card in Studio
   const handleSaveToNote = async (itemId: string, content: string, question?: string) => {
@@ -2054,7 +2172,7 @@ ${notesText.trim() || 'No notes available.'}
             </div>
 
             {/* Divider if conversation started */}
-            {(allDisplayMessages.length > 0 || streamingReplyText) && (
+            {(allDisplayMessages.length > 0 || streamingReplyText || geminiRevealedWords) && (
               <div className="border-t border-[#23252b]" />
             )}
 
@@ -2170,17 +2288,26 @@ ${notesText.trim() || 'No notes available.'}
                 )
               })}
 
-              {/* Live Streaming AI Reply (text streams ahead of voice!) */}
-              {streamingReplyText && (
+              {/* Live Gemini Live Sequential Word-by-Word Reveal (active spoken word bolded!) */}
+              {geminiRevealedWords ? (
+                <div className="space-y-2">
+                  <div className="text-[14.5px] leading-[1.7] text-[#dcdfe4] whitespace-pre-wrap max-w-none">
+                    <span>{geminiRevealedWords.before}</span>
+                    <strong className="font-bold text-white">{geminiRevealedWords.active}</strong>
+                  </div>
+                </div>
+              ) : streamingReplyText ? (
                 <div className="space-y-2">
                   <div className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-strong:text-white prose-code:bg-[#1c1d20] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded max-w-none">
                     <MarkdownRenderer>{streamingReplyText}</MarkdownRenderer>
                   </div>
                 </div>
-              )}
+              ) : null}
 
               {/* Status indicator (Searching / Thinking / Speaking) */}
-              {(isSearchingWeb || (isBusy && !streamingReplyText) || isAiSpeaking) && (
+              {(isSearchingWeb ||
+                (isBusy && !streamingReplyText && !geminiRevealedWords) ||
+                isAiSpeaking) && (
                 <div className="flex items-center gap-2.5 text-xs text-[#9aa0a6] py-1">
                   {isAiSpeaking ? (
                     <>
