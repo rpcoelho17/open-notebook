@@ -51,6 +51,9 @@ This fork extends [Open Notebook](https://github.com/lfnovo/open-notebook) with 
   1. **Gemini Live (Default):** Native speech-to-speech powered by Gemini Live (`gemini-2.5-flash-native-audio-latest`) via a server-side WebSocket proxy (keeps your API key in `.env`). Includes a 1-click toggle between **Press ↑ to send** *(default — dictate, review/edit, then send)* and **Hands-free** conversation.
   2. **Local Voice + Chat Model:** Local `faster-whisper` speech-to-text + your chosen streaming chat model + local **Kokoro-82M** neural text-to-speech, plus a **Read Aloud** speaker button on every reply and overview.
 - **🖥️ Dark 3-Column Research Workspace (`Sources` | `Chat` | `Studio`):** Drag-to-resize Sources panel with full-title/URL hover tooltips, automatic notebook overviews, paired Q&A **Save to note**, **Studio Infographics**, per-turn **Exa Web Search**, and quick **Thinking Effort** controls.
+- **📂 Dedicated GitHub Import:** Introduced a specialized section for GitHub repository ingestion including sub-directory and file type filtering capabilities.
+- **✏️ Editable Prompts for Generating Customized Reports:** Added a custom "Prompt" button allowing prompt tailoring to generate specialized reports and podcasts.
+- **🎧 Custom Audio Player:** Replaced native playback with an inline Studio bar featuring **5-second rewind and forward skip buttons**.
 - **🚀 One-Click Windows Launchers:** Start or stop the entire stack locally with `start-open-notebook.bat` / `stop-open-notebook.bat`.
 
 | Quick Chat Voice Switcher | Voice, Chat Model & Studio Settings |
