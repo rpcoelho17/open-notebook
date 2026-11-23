@@ -2,7 +2,13 @@
 
 ## The Sidebar
 
-The workspace pages have a sidebar on the left (it can be collapsed to icons). The exception is a source's own page (opened with **Chat with Sources**), which shows only the source and its chat.
+All management and library pages (`/notebooks`, `/sources`, `/search`, `/podcasts`, `/transformations`, `/settings`, `/settings/models`, and `/advanced`) show a collapsible navigation sidebar on the left.
+
+Individual **notebook pages** (`/notebooks/<id>`) and **source pages** hide this sidebar to give the 3-column workspace full screen width. From inside any notebook, you can get back to the sidebar in three ways:
+
+1. Click the **Open Notebook logo** in the top-left of the notebook header (or the **avatar pill** in the top-right) to return to **All Notebooks** (`/notebooks`), where the sidebar is shown.
+2. Click the **Navigation grid icon (`⊞`)** in the top-right of the notebook header to jump straight to **All Notebooks**, **Podcasts**, **Transformations**, **Models & Providers**, or **App Settings** (all of which show the sidebar).
+3. Press **`Ctrl+K`** (**`⌘K`** on Mac) anywhere to open **Quick actions** and jump directly to any sidebar page, including **Sources**, **Ask and Search**, and **Advanced**.
 
 ```
 ┌──────────────────────┐
@@ -46,43 +52,54 @@ The workspace pages have a sidebar on the left (it can be collapsed to icons). T
 
 ## The Notebook Page
 
-Opening a notebook shows its header and three columns.
+Opening a notebook displays a full-width dark workspace with a streamlined top header and three columns ordered **`Sources` | `Chat` | `Studio`**.
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│ Notebook name   (click to edit)            [Archive]   [Delete]    │
-│ Description     (click to edit)                                    │
-├──────────────────┬──────────────────┬──────────────────────────────┤
-│ SOURCES          │ NOTES            │ CHAT WITH NOTEBOOK           │
-│ [Context] [Add   │ [Context]        │ [Sessions]                   │
-│           Source]│ [Write Note]     │                              │
-│                  │                  │  messages, with numbered     │
-│ ┌──────────────┐ │ ┌──────────────┐ │  references                  │
-│ │ paper.pdf    │ │ │ My notes     │ │                              │
-│ │ File · 2     │ │ │ Human        │ │  2 sources · 1 note          │
-│ │ insights  ◐ ⋮│ │ │            ◐ │ │  ~12,400 tokens              │
-│ └──────────────┘ │ └──────────────┘ │ [Model] [Ask anything...]    │
-└──────────────────┴──────────────────┴──────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│ [Logo] Notebook name (click to edit)     [+ Create notebook] [⋮] [⚙] [⊞] R│
+├───────────────────┬──────────────────────────────────┬─────────────────────┤
+│ SOURCES      [◧]  │ CHAT                   [Sessions]│ STUDIO          [◨] │
+│ [+ Add sources]   │                                  │ ┌────────┬────────┐ │
+│ Link existing  ☑  │  Auto-generated Notebook         │ │ Audio  │Reports │ │
+│                   │  Overview (all active sources)   │ │Overview│        │ │
+│ ┌───────────────┐ │  [Save to note] [Copy] [🔊] [↻]  │ ├────────┼────────┤ │
+│ │ 📂 owner/repo │ │  ──────────────────────────────  │ │Infogr. │Add note│ │
+│ │ 📄 book.pdf   │ │  Chat & voice turns with live    │ └────────┴────────┘ │
+│ │ 🌐 article    │ │  word-by-word speech highlight   │                     │
+│ └───────────────┘ │                                  │ 🎧 Audio Overview   │
+│  (drag edge to    │  [Ask anything...]               │    [-5s][▶][+5s]    │
+│   resize width)   │  [Sliders][🌐 Web]  [🎙] [↑]     │ 📄 Briefing Doc     │
+│                   │                                  │ 📊 Infographic      │
+└───────────────────┴──────────────────────────────────┴─────────────────────┘
 ```
 
-On desktop the Sources and Notes columns can be collapsed. On small screens the columns become three tabs, **Sources**, **Notes** and **Chat**, with Chat selected first.
+- **Header controls:** Click the notebook title to rename inline; use **+ Create notebook** to start a new notebook; **⋮** to archive or delete; **⚙** to open **Voice, Chat Model & Studio Settings** (Speech-to-Speech engine, Gemini Live input mode, voices, Default Chat Model, and dynamic Context Window slider); and **⊞** to jump to other Open Notebook pages.
+- **Responsive layout:** On desktop, both **Sources** and **Studio** can be collapsed to slim icon strips, and the **Sources** column edge can be dragged to resize (`220px–560px`). On small screens, the columns become three tabs: **Sources**, **Chat**, and **Studio** (with **Chat** selected first).
 
-### Sources column
+### Sources column (left)
 
-- **Add Source** opens a menu: **Add Source** (the wizard for new content) or **Add Existing Sources** (link sources from your library). See [Adding Sources](adding-sources.md).
-- **Context** sets every source at once: **Include all (insights only)**, **Include all (full content)** or **Exclude all from context**.
-- Each **source card** shows the title, the type (Add URL, Upload File or Enter Text), the processing status while it isn't finished, and the insight count (when there are any). The **context icon** cycles the source's [context level](../2-CORE-CONCEPTS/ai-context-rag.md#context-levels-in-notebook-chat) when you click it. The **⋮ menu** has **Remove from Notebook**, **Retry Processing** (failed sources), **Refresh content** (completed links) and **Delete Source**.
-- Click a card to open the source view.
+- **+ Add sources** opens the source wizard with four tabs: **Link** (single or batch URLs, with a one-click banner if a GitHub repository URL is pasted), **GitHub** (dedicated repository/directory importer with live **Preview**, subfolder & extension filters, and optional private-repo token), **Upload** (files up to 200 MB), and **Text** (pasted text). See [Adding Sources](adding-sources.md).
+- **Link existing** connects sources already in your library without re-uploading.
+- **Checkboxes** toggle which sources are included in chat, voice, and Studio context (with a bulk **Select all** toggle).
+- Hovering over a source card shows its full wrapped title and URL; clicking a card opens the **Source View**; the **⋮ menu** offers **Remove from notebook**, **Retry**, and **Delete**.
 
-### Notes column
+### Chat column (center)
 
-- **Write Note** creates a note.
-- **Context** has **Include all in context** and **Exclude all from context**.
-- Each **note card** shows the title, an **AI Generated** or **Human** badge and a context icon (on or off). Click a card to edit the note. See [Working with Notes](working-with-notes.md).
+- **Notebook Overview:** Automatically synthesizes all completed sources in the notebook into a concise overview paragraph at the top of Chat (re-generated whenever sources are added or removed), with **Save to note**, **Copy**, **Read Aloud**, and **Regenerate** buttons.
+- **Sessions:** Switch between or create saved chat sessions for the notebook.
+- **Hybrid Vector RAG:** Automatically combines source overviews/Tables of Contents with scoped vector-matched passages so large textbooks and multi-file GitHub repositories stay accurate within model context limits.
+- **Voice Chat (Speech-to-Speech):** Click the voice icon inside the chat input bar to talk directly to your documents using either **Gemini Live** *(with real-time word-by-word text highlighting synced to speech, plus Press ↑ to send or Hands-free mode)* or **Local Voice + Chat Model** (`faster-whisper` + Kokoro-82M TTS).
+- **Chat Input Controls:** Use the **Sliders** popover to switch Speech-to-Speech engines, input modes, and Thinking Effort on the fly; toggle **Web Search** directly from the chat input to answer strictly from notebook sources or expand to the web.
+- **Message Actions:** Every AI reply includes **Save to note**, **Copy**, **Read Aloud**, and **Delete** (in-place deletion without losing scroll position); user messages also include an inline **Delete** button.
 
-### Chat column
+### Studio column (right)
 
-Notebook chat with the sources and notes in context. **Sessions** opens your saved chat sessions, the model button picks a model for the session, and the panel shows how much content is in context. Send with **Ctrl+Enter** (**⌘+Enter** on Mac). See [Chat Effectively](chat-effectively.md).
+Replaces the classic Notes column with a unified output workspace:
+
+- **Audio Overview:** Opens the podcast generator pre-expanded to the current notebook. Adding custom focus instructions automatically prioritizes matching passages via Hybrid Vector RAG. Active and completed episodes appear at the top of Studio with a built-in **Custom Audio Player** featuring **5-second rewind/forward skip buttons**, scrubbable progress bar, speed toggle (`1x–2x`), mute, and MP3 download.
+- **Reports:** Opens **Create Report** with built-in **Executive Briefing Doc**, **Briefing Doc**, **Study Guide & Q&A**, and all **Open Notebook Transformations**. Click any card to generate immediately, or click its **`Prompt`** button (pencil + 3 dots) to customize the prompt for that single run without overwriting the default.
+- **Infographic:** Generates a self-contained dark-themed HTML/SVG visual infographic from your selected sources and saves it as a Studio card.
+- **Add note / Saved Notes:** Click any saved note or report card to open it in **rendered Markdown preview** by default (with Edit, Split, and Preview toggles on the toolbar).
 
 ---
 
@@ -90,20 +107,20 @@ Notebook chat with the sources and notes in context. **Sessions** opens your sav
 
 Clicking a source opens it with three tabs:
 
-- **Content**: the extracted text and, for YouTube links, the embedded video.
-- **Insights**: the insights generated by transformations, and **Generate New Insight** to run another one. See [Transformations](transformations.md).
-- **Details**: topics, embedding status, created and updated dates, and the notebooks the source belongs to (**Manage Notebooks**).
+- **Content:** The extracted text (and embedded video for YouTube links). Imported **GitHub repositories** render a structured top reference (**Overview**, **Table of Contents** directory tree, **Main Files & What They Do**, **Architecture & Entry Points**, and **Tech Stack**) followed by a collapsible, searchable **Indexed Source Files** code browser.
+- **Insights:** Transformation outputs generated for the source, plus **Generate New Insight**. Opening an insight includes **Save as Note** pre-selected to your current notebook. See [Transformations](transformations.md).
+- **Details:** Topics, embedding status, timestamps, and notebook associations (**Manage Notebooks**).
 
-**Chat with Sources** opens the source's own page, with the source on the left and a chat about it on the right. The **⋮ menu** has **Download File** (uploaded files, while the file is still stored), **Embed Content** (if the source isn't embedded yet) and **Delete Source**.
+**Chat with Sources** opens the source's dedicated page (source on the left, focused chat on the right). The **⋮ menu** provides **Download File** (for stored uploads), **Embed Content**, and **Delete Source**.
 
 ---
 
 ## Other Pages
 
-- **Sources** (library): a table of all sources with type, insight count and embedding status. **New Source** adds a source without opening a notebook.
-- **Notebooks**: **New Notebook**, a search box, **Recently Viewed**, and the **Active Notebooks** and **Archived Notebooks** lists.
-- **Settings**: Content Processing (document and URL engines, OCR and other Docling options; see [Content Processing Engines](content-processing-engines.md)), Embedding and Search (**Default Embedding Option**: Ask, Always or Never), and File Management (**Auto Delete Files**: whether uploaded files are deleted after processing).
-- **Advanced**: **System Info** shows your version and whether an update is available. **Rebuild Embeddings** re-embeds content after you change the embedding model (mode *Existing* or *All*); it runs in the background.
+- **Sources** (`/sources`): A library table of all sources across notebooks with type, insight count, and embedding status.
+- **Notebooks** (`/notebooks`): **New Notebook**, search, deduplicated **Recently Viewed** notebooks, and **Active / Archived Notebooks**.
+- **Settings** (`/settings`): Content Processing (document and URL engines, OCR and Docling options; see [Content Processing Engines](content-processing-engines.md)), Embedding and Search (**Default Embedding Option**), and File Management (**Auto Delete Files**).
+- **Advanced** (`/advanced`): **System Info** (version and update check) and **Rebuild Embeddings** (background re-embedding for *Existing* or *All* sources).
 
 ---
 
@@ -112,7 +129,7 @@ Clicking a source opens it with three tabs:
 | Shortcut | Where | Action |
 |----------|-------|--------|
 | **Ctrl+K** / **⌘K** | Anywhere | Open Quick actions (command palette) |
-| **Ctrl+Enter** / **⌘+Enter** | Chat message box | Send |
-| **Enter** | Chat message box | New line |
+| **Enter** | Chat input bar | Send message |
+| **Shift+Enter** | Chat input bar | New line |
 | **Ctrl+Enter** / **⌘+Enter** | Ask question box | Ask |
 | **Enter** | Search box | Search |
