@@ -412,6 +412,72 @@ class DeleteMessageRequest(BaseModel):
     )
 
 
+class UpdateMessageRequest(BaseModel):
+    message_id: Optional[str] = Field(None, description="ID of the message to update")
+    original_content: Optional[str] = Field(
+        None, description="Fallback original content match for optimistic messages"
+    )
+    content: str = Field(..., description="Updated message content")
+
+
+@router.post("/chat/sessions/{session_id}/messages/update", response_model=ExecuteChatResponse)
+async def update_session_message(session_id: str, request: UpdateMessageRequest):
+    """Update a specific chat message in-place inside the session's LangGraph SQLite checkpoint."""
+    try:
+        new_content = request.content.strip()
+        if not new_content:
+            raise HTTPException(status_code=400, detail="Message content cannot be empty")
+
+        full_session_id, session = await get_session_or_404(session_id)
+
+        from open_notebook.utils.text_utils import extract_text_content
+
+        config = RunnableConfig(configurable={"thread_id": full_session_id})
+        thread_state = await asyncio.to_thread(chat_graph.get_state, config=config)
+        raw_messages = (
+            list(thread_state.values.get("messages", []))
+            if thread_state and thread_state.values
+            else []
+        )
+
+        target_msg = None
+        if request.message_id:
+            for m in raw_messages:
+                if str(getattr(m, "id", "")) == request.message_id:
+                    target_msg = m
+                    break
+
+        if target_msg is None and request.original_content:
+            wanted = request.original_content.strip()
+            for i in range(len(raw_messages) - 1, -1, -1):
+                m = raw_messages[i]
+                m_content = extract_text_content(getattr(m, "content", "")).strip()
+                if m_content == wanted:
+                    target_msg = m
+                    break
+
+        if target_msg is None:
+            raise HTTPException(status_code=404, detail="Message not found in chat history")
+
+        updated_msg = target_msg.model_copy(update={"content": new_content})
+        await asyncio.to_thread(chat_graph.update_state, config, {"messages": [updated_msg]})
+        await session.save()
+
+        updated_state = await asyncio.to_thread(chat_graph.get_state, config=config)
+        messages: list[ChatMessage] = []
+        if updated_state and updated_state.values and "messages" in updated_state.values:
+            messages = extract_chat_messages(updated_state.values["messages"])
+
+        return ExecuteChatResponse(session_id=session_id, messages=messages)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating message in session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error updating message: {str(e)}")
+
+
 @router.post("/chat/sessions/{session_id}/messages/delete", response_model=ExecuteChatResponse)
 async def delete_session_message(session_id: str, request: DeleteMessageRequest):
     """Delete a specific AI/chat message from the session's LangGraph SQLite checkpoint."""

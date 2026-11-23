@@ -336,6 +336,50 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     [currentSessionId, notebookId, queryClient]
   )
 
+  // Update an individual chat message in-place in both UI state and the LangGraph SQLite database
+  const updateMessage = useCallback(
+    async (
+      messageId: string,
+      newContent: string,
+      originalContent?: string
+    ): Promise<boolean> => {
+      if (!currentSessionId) return false
+      try {
+        const res = await fetch(
+          `/api/chat/sessions/${encodeURIComponent(currentSessionId)}/messages/update`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message_id: messageId,
+              original_content: originalContent,
+              content: newContent,
+            }),
+          }
+        )
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`)
+        }
+        const data = await res.json()
+        if (Array.isArray(data?.messages)) {
+          setMessages(data.messages)
+        }
+        queryClient.invalidateQueries({
+          queryKey: QUERY_KEYS.notebookChatSession(currentSessionId),
+        })
+        queryClient.invalidateQueries({
+          queryKey: QUERY_KEYS.notebookChatSessions(notebookId),
+        })
+        return true
+      } catch (err) {
+        console.error('Failed to update message:', err)
+        toast.error('Failed to save edited response to database')
+        return false
+      }
+    },
+    [currentSessionId, notebookId, queryClient]
+  )
+
   // Set model override - handles both existing sessions and pending state
   const setModelOverride = useCallback((model: string | null) => {
     if (currentSessionId) {
@@ -380,6 +424,7 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     updateSession,
     deleteSession,
     deleteMessage,
+    updateMessage,
     switchSession,
     sendMessage,
     setModelOverride,

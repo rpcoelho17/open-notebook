@@ -46,6 +46,7 @@ import {
   Volume2,
   VolumeX,
   Trash2,
+  X,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -185,6 +186,27 @@ function popSpeakableChunk(buffer: string, isFirstChunk: boolean): [string, stri
   return null
 }
 
+// Custom "pencil with 3 dots" icon matching StudioColumn's edit button
+function PencilDotsIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L9 17l-4 1 1-4 10.5-10.5z" />
+      <circle cx="7" cy="21" r="1.15" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="21" r="1.15" fill="currentColor" stroke="none" />
+      <circle cx="17" cy="21" r="1.15" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
 export function ChatColumn({
   notebookId,
   contextSelections,
@@ -225,6 +247,9 @@ export function ChatColumn({
   const [isTranscribingChunk, setIsTranscribingChunk] = useState(false)
   const [isStreamingVoiceReply, setIsStreamingVoiceReply] = useState(false)
   const [isAiSpeaking, setIsAiSpeaking] = useState(false)
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingContent, setEditingContent] = useState('')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
   const [streamingReplyText, setStreamingReplyText] = useState('')
   const [geminiRevealedWords, setGeminiRevealedWords] = useState<{
     before: string
@@ -1710,6 +1735,50 @@ ${notesText.trim() || 'No notes available.'}
     }
   }
 
+  // Enter inline edit mode for an LLM response
+  const handleStartEditMessage = (messageId: string, content: string) => {
+    if (readingId === messageId) {
+      stopVoicePlayback()
+    }
+    setEditingMessageId(messageId)
+    setEditingContent(content)
+  }
+
+  const handleCancelEditMessage = () => {
+    if (isSavingEdit) return
+    setEditingMessageId(null)
+    setEditingContent('')
+  }
+
+  const handleSaveEditMessage = async (messageId: string, originalContent: string) => {
+    const trimmed = editingContent.trim()
+    if (!trimmed) {
+      toast.error('Response cannot be empty')
+      return
+    }
+    if (trimmed === originalContent.trim()) {
+      setEditingMessageId(null)
+      setEditingContent('')
+      return
+    }
+    if (isSavingEdit) return
+    setIsSavingEdit(true)
+    try {
+      const ok = await chat.updateMessage(messageId, trimmed, originalContent)
+      if (ok) {
+        // Also update optimistic local voice turns if present
+        setVoiceTurns((prev) =>
+          prev.map((m) => (m.id === messageId ? { ...m, content: trimmed } : m))
+        )
+        setEditingMessageId(null)
+        setEditingContent('')
+        toast.success('Response saved to chat history')
+      }
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
+
   // Delete an AI answer from both the chat canvas and Open Notebook's database
   const handleDeleteMessage = async (messageId: string, content: string) => {
     if (deletingId) return
@@ -2422,19 +2491,76 @@ ${notesText.trim() || 'No notes available.'}
                   message.content,
                   'References'
                 )
+                const isEditingThis = editingMessageId === message.id
+                const editRows = isEditingThis
+                  ? Math.min(24, Math.max(5, editingContent.split('\n').length + Math.ceil(editingContent.length / 85)))
+                  : 5
 
                 return (
                   <div key={message.id} className="space-y-2.5">
-                    <div
-                      data-readaloud-id={message.id}
-                      className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-strong:text-white prose-code:bg-[#1c1d20] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded max-w-none"
-                    >
-                      <MarkdownRenderer components={markdownComponents}>
-                        {compactMd}
-                      </MarkdownRenderer>
-                    </div>
+                    {isEditingThis ? (
+                      <div className="space-y-2.5">
+                        <textarea
+                          value={editingContent}
+                          onChange={(e) => setEditingContent(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') {
+                              e.preventDefault()
+                              handleCancelEditMessage()
+                            } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                              e.preventDefault()
+                              handleSaveEditMessage(message.id, message.content)
+                            }
+                          }}
+                          rows={editRows}
+                          disabled={isSavingEdit}
+                          autoFocus
+                          aria-label="Edit response"
+                          className="w-full rounded-xl bg-[#16171b] border border-[#3a3d45] focus:border-[#8ab4f8] focus:outline-none px-3.5 py-3 text-[14.5px] leading-[1.7] text-[#e8eaed] resize-y min-h-[120px] disabled:opacity-60"
+                        />
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11.5px] text-[#7c828c]">
+                            Markdown supported · Ctrl+Enter to save · Esc to cancel
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={handleCancelEditMessage}
+                              disabled={isSavingEdit}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium text-[#c4c7c5] hover:text-white hover:bg-[#1e1f24] border border-[#2f3136] transition-colors disabled:opacity-50"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSaveEditMessage(message.id, message.content)}
+                              disabled={isSavingEdit || !editingContent.trim()}
+                              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-medium bg-[#8ab4f8] text-[#0e0f12] hover:bg-[#aecbfa] transition-colors disabled:opacity-50"
+                            >
+                              {isSavingEdit ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Check className="h-3.5 w-3.5" />
+                              )}
+                              Save changes
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        data-readaloud-id={message.id}
+                        className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-strong:text-white prose-code:bg-[#1c1d20] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded max-w-none"
+                      >
+                        <MarkdownRenderer components={markdownComponents}>
+                          {compactMd}
+                        </MarkdownRenderer>
+                      </div>
+                    )}
 
                     {/* Exact NotebookLM Action Bar underneath AI reply */}
+                    {!isEditingThis && (
                     <div className="flex items-center gap-1.5 pt-0.5">
                       <button
                         type="button"
@@ -2461,6 +2587,16 @@ ${notesText.trim() || 'No notes available.'}
                         ) : (
                           <Copy className="h-3.5 w-3.5" />
                         )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleStartEditMessage(message.id, message.content)}
+                        className="h-7 w-7 rounded-full flex items-center justify-center text-[#9aa0a6] hover:text-[#e8eaed] hover:bg-[#1e1f24] transition-colors"
+                        title="Edit response"
+                        aria-label="Edit response"
+                      >
+                        <PencilDotsIcon className="h-3.5 w-3.5" />
                       </button>
 
                       <button
@@ -2496,6 +2632,7 @@ ${notesText.trim() || 'No notes available.'}
                         )}
                       </button>
                     </div>
+                    )}
                   </div>
                 )
               })}
