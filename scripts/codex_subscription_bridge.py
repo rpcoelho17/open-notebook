@@ -974,6 +974,7 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
         provider = (req.get("provider") or req.get("model") or "kokoro").lower()
         speed = float(req.get("speed") or 1.0)
         response_format = (req.get("response_format") or "wav").strip().lower()
+        include_timings = bool(req.get("include_timings", False))
 
         openai_to_kokoro = {
             "nova": "af_heart",
@@ -1054,6 +1055,57 @@ class CodexBridgeHandler(BaseHTTPRequestHandler):
                 else:
                     audio_bytes = wav_bytes
                     content_type = "audio/wav"
+
+            if include_timings:
+                import base64 as _b64
+                word_timings = []
+                duration_sec = 0.0
+                try:
+                    import soundfile as sf_info
+                    with sf_info.SoundFile(io.BytesIO(audio_bytes)) as sf_obj:
+                        duration_sec = len(sf_obj) / float(sf_obj.samplerate or 24000)
+                except Exception:
+                    duration_sec = 0.0
+
+                try:
+                    whisper_model = get_whisper_model()
+                    with _WHISPER_LOCK:
+                        segments, _ = whisper_model.transcribe(
+                            io.BytesIO(audio_bytes),
+                            language="en",
+                            beam_size=1,
+                            word_timestamps=True,
+                            vad_filter=False,
+                        )
+                        for seg in segments:
+                            for w in seg.words or []:
+                                token = (w.word or "").strip()
+                                if token:
+                                    word_timings.append(
+                                        {
+                                            "word": token,
+                                            "start": round(float(w.start), 3),
+                                            "end": round(float(w.end), 3),
+                                        }
+                                    )
+                except Exception as align_err:
+                    print(f"[Codex Bridge] Word alignment skipped: {align_err}")
+
+                payload = json.dumps(
+                    {
+                        "audio_base64": _b64.b64encode(audio_bytes).decode("ascii"),
+                        "content_type": content_type,
+                        "duration": round(duration_sec, 3),
+                        "words": word_timings,
+                    }
+                ).encode("utf-8")
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
 
             self.send_response(200)
             self._send_cors_headers()

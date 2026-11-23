@@ -15,6 +15,13 @@ import {
   convertReferencesToCompactMarkdown,
   createCompactReferenceLinkComponent,
 } from '@/lib/utils/source-references'
+import {
+  prepareReadAloudDom,
+  alignSentenceTimingsToDom,
+  splitIntoSpeechSentences,
+  type ReadAloudDomHandle,
+  type TimedWordEntry,
+} from '@/lib/utils/read-aloud-highlight'
 import { useModalManager } from '@/lib/hooks/use-modal-manager'
 import {
   useVoiceSettingsStore,
@@ -262,6 +269,8 @@ export function ChatColumn({
   const ttsAbortRef = useRef<AbortController | null>(null)
   const ttsAudioRef = useRef<HTMLAudioElement | null>(null)
   const ttsAudioUrlRef = useRef<string | null>(null)
+  const readAloudDomRef = useRef<ReadAloudDomHandle | null>(null)
+  const readAloudRafRef = useRef<number | null>(null)
 
   const engineRef = useRef(engine)
   const geminiSendModeRef = useRef(geminiSendMode)
@@ -400,8 +409,20 @@ export function ChatColumn({
     }
   }, [input])
 
+  const clearReadAloudHighlight = useCallback(() => {
+    if (readAloudRafRef.current !== null) {
+      window.cancelAnimationFrame(readAloudRafRef.current)
+      readAloudRafRef.current = null
+    }
+    if (readAloudDomRef.current) {
+      readAloudDomRef.current.cleanup()
+      readAloudDomRef.current = null
+    }
+  }, [])
+
   // Stop active TTS playback + abort streaming reply cleanly
   const stopVoicePlayback = useCallback(() => {
+    clearReadAloudHighlight()
     if (ttsAbortRef.current) {
       ttsAbortRef.current.abort()
       ttsAbortRef.current = null
@@ -421,7 +442,136 @@ export function ChatColumn({
     setIsAiSpeaking(false)
     setIsStreamingVoiceReply(false)
     setReadingId(null)
-  }, [])
+  }, [clearReadAloudHighlight])
+
+  const fetchTtsTimed = useCallback(
+    async (
+      text: string,
+      signal: AbortSignal
+    ): Promise<{ blob: Blob; duration: number; words: TimedWordEntry[] } | null> => {
+      const clean = cleanForSpeech(text)
+      if (!clean) return null
+      const provider = 'kokoro'
+      const voice = kokoroVoiceRef.current || 'af_heart'
+
+      const res = await fetch(LOCAL_TTS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider,
+          voice,
+          input: clean,
+          speed: 1.0,
+          include_timings: true,
+        }),
+        signal,
+      })
+      if (!res.ok) return null
+      const ct = res.headers.get('content-type') || ''
+      if (ct.includes('application/json')) {
+        const data = await res.json()
+        const b64 = String(data?.audio_base64 || '')
+        if (!b64) return null
+        const bin = atob(b64)
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) {
+          bytes[i] = bin.charCodeAt(i)
+        }
+        const blob = new Blob([bytes], { type: data?.content_type || 'audio/wav' })
+        const words: TimedWordEntry[] = Array.isArray(data?.words) ? data.words : []
+        const duration = typeof data?.duration === 'number' ? data.duration : 0
+        return { blob, duration, words }
+      }
+      const blob = await res.blob()
+      return { blob, duration: 0, words: [] }
+    },
+    []
+  )
+
+  const playAudioBlobTimed = useCallback(
+    (
+      blob: Blob,
+      signal: AbortSignal,
+      schedule: Array<{ domIdx: number; start: number; end: number }>,
+      onHighlight?: (domIdx: number | null) => void
+    ): Promise<void> => {
+      return new Promise((resolve) => {
+        if (signal.aborted) {
+          resolve()
+          return
+        }
+        const url = URL.createObjectURL(blob)
+        ttsAudioUrlRef.current = url
+        const audio = new Audio(url)
+        ttsAudioRef.current = audio
+
+        const stopRaf = () => {
+          if (readAloudRafRef.current !== null) {
+            window.cancelAnimationFrame(readAloudRafRef.current)
+            readAloudRafRef.current = null
+          }
+        }
+
+        const cleanup = () => {
+          stopRaf()
+          signal.removeEventListener('abort', onAbort)
+          if (ttsAudioUrlRef.current === url) {
+            URL.revokeObjectURL(url)
+            ttsAudioUrlRef.current = null
+          }
+          if (ttsAudioRef.current === audio) {
+            ttsAudioRef.current = null
+          }
+          resolve()
+        }
+        const onAbort = () => {
+          stopRaf()
+          audio.pause()
+          audio.src = ''
+          cleanup()
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        audio.onended = cleanup
+        audio.onerror = cleanup
+
+        if (schedule.length > 0 && onHighlight) {
+          let rafStarted = false
+          const tick = () => {
+            if (signal.aborted || audio.ended) return
+            const t = audio.currentTime
+            let activeDomIdx: number | null = null
+            for (let i = 0; i < schedule.length; i++) {
+              if (schedule[i].start <= t + 0.04) {
+                activeDomIdx = schedule[i].domIdx
+              } else {
+                break
+              }
+            }
+            if (activeDomIdx !== null) {
+              onHighlight(activeDomIdx)
+            }
+            if (!audio.paused && !audio.ended) {
+              readAloudRafRef.current = window.requestAnimationFrame(tick)
+            }
+          }
+          const startLoop = () => {
+            if (rafStarted || signal.aborted || audio.ended) return
+            rafStarted = true
+            stopRaf()
+            tick()
+          }
+          audio.onplay = startLoop
+          audio
+            .play()
+            .then(startLoop)
+            .catch(cleanup)
+        } else {
+          audio.play().catch(cleanup)
+        }
+      })
+    },
+    []
+  )
 
   const fetchTtsBlob = useCallback(async (text: string, signal: AbortSignal): Promise<Blob | null> => {
     const clean = cleanForSpeech(text)
@@ -1610,18 +1760,71 @@ ${notesText.trim() || 'No notes available.'}
     setIsAiSpeaking(true)
 
     try {
-      // Split into natural sentences so playback starts on Sentence 1 while Sentence 2 synthesizes in parallel
-      const rawSentences = clean.match(/[^.!?\n]+[.!?\n]*/g) || [clean]
-      const chunks = rawSentences.map((s) => s.trim()).filter(Boolean)
-      const audioPromises = chunks.map((chunk) =>
-        fetchTtsBlob(chunk, abort.signal).catch(() => null)
-      )
+      const selector = `[data-readaloud-id="${itemId.replace(/"/g, '\\"')}"]`
+      let domHandle: ReadAloudDomHandle | null = null
+      let domCursor = 0
 
-      for (const blobPromise of audioPromises) {
+      const ensureDomHandle = (): ReadAloudDomHandle | null => {
+        if (domHandle && domHandle.isConnected()) {
+          return domHandle
+        }
+        if (domHandle) {
+          domHandle.cleanup()
+          domHandle = null
+        }
+        const containerEl =
+          typeof document !== 'undefined'
+            ? (document.querySelector(selector) as HTMLElement | null)
+            : null
+        if (!containerEl) return null
+        domHandle = prepareReadAloudDom(containerEl)
+        readAloudDomRef.current = domHandle
+        return domHandle
+      }
+
+      // Split into natural sentences (preserving filenames like GLOSSARY.md) and pipeline 1 sentence ahead
+      // so Sentence 1 gets full CPU and starts speaking quickly without contention.
+      const chunks = splitIntoSpeechSentences(clean)
+      if (chunks.length === 0) return
+
+      let currentPromise: Promise<{ blob: Blob; duration: number; words: TimedWordEntry[] } | null> | null =
+        fetchTtsTimed(chunks[0], abort.signal).catch(() => null)
+
+      for (let i = 0; i < chunks.length; i++) {
         if (abort.signal.aborted) break
-        const blob = await blobPromise
-        if (!blob || abort.signal.aborted) continue
-        await playAudioBlob(blob, abort.signal)
+        const timed = currentPromise ? await currentPromise : null
+        if (abort.signal.aborted) break
+
+        // Immediately prefetch the next sentence while this sentence plays
+        currentPromise =
+          i + 1 < chunks.length
+            ? fetchTtsTimed(chunks[i + 1], abort.signal).catch(() => null)
+            : null
+
+        if (!timed) continue
+
+        // Prepare (or verify) DOM spans AFTER React has committed setReadingId/setIsAiSpeaking
+        const activeDom = ensureDomHandle()
+
+        let schedule: Array<{ domIdx: number; start: number; end: number }> = []
+        if (activeDom && activeDom.words.length > 0) {
+          const aligned = alignSentenceTimingsToDom(
+            chunks[i],
+            timed.words,
+            activeDom.words,
+            domCursor,
+            timed.duration
+          )
+          schedule = aligned.schedule
+          domCursor = aligned.nextCursor
+        }
+
+        await playAudioBlobTimed(
+          timed.blob,
+          abort.signal,
+          schedule,
+          activeDom ? activeDom.highlightIndex : undefined
+        )
       }
     } catch (err: unknown) {
       if ((err as { name?: string })?.name !== 'AbortError') {
@@ -1629,6 +1832,7 @@ ${notesText.trim() || 'No notes available.'}
         toast.error('Read aloud failed — check local voice bridge')
       }
     } finally {
+      clearReadAloudHighlight()
       setReadingId((prev) => (prev === itemId ? null : prev))
       setIsAiSpeaking(false)
       if (wasVoiceOn) {
@@ -2040,6 +2244,8 @@ ${notesText.trim() || 'No notes available.'}
     [handleReferenceClick]
   )
 
+  const markdownComponents = useMemo(() => ({ a: LinkComponent }), [LinkComponent])
+
   if (sourcesLoading || notesLoading) {
     return (
       <div className="h-full flex items-center justify-center bg-[#0e0f12]">
@@ -2096,7 +2302,10 @@ ${notesText.trim() || 'No notes available.'}
                 </div>
               ) : autoSummary ? (
                 <div className="space-y-3">
-                  <div className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-p:my-0 prose-strong:text-[#ffffff] max-w-none">
+                  <div
+                    data-readaloud-id="overview-summary"
+                    className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-p:my-0 prose-strong:text-[#ffffff] max-w-none"
+                  >
                     <MarkdownRenderer>{autoSummary}</MarkdownRenderer>
                   </div>
 
@@ -2216,8 +2425,11 @@ ${notesText.trim() || 'No notes available.'}
 
                 return (
                   <div key={message.id} className="space-y-2.5">
-                    <div className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-strong:text-white prose-code:bg-[#1c1d20] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded max-w-none">
-                      <MarkdownRenderer components={{ a: LinkComponent }}>
+                    <div
+                      data-readaloud-id={message.id}
+                      className="text-[14.5px] leading-[1.7] text-[#dcdfe4] prose prose-invert prose-strong:text-white prose-code:bg-[#1c1d20] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded max-w-none"
+                    >
+                      <MarkdownRenderer components={markdownComponents}>
                         {compactMd}
                       </MarkdownRenderer>
                     </div>
