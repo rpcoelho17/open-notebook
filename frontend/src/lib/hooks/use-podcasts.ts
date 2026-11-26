@@ -45,12 +45,18 @@ function hasActiveEpisodes(episodes: PodcastEpisode[]) {
   })
 }
 
-export function usePodcastEpisodes(options?: { autoRefresh?: boolean; forcePoll?: boolean }) {
-  const { autoRefresh = true, forcePoll = false } = options ?? {}
+export function usePodcastEpisodes(options?: {
+  autoRefresh?: boolean
+  forcePoll?: boolean
+  notebookId?: string
+}) {
+  const { autoRefresh = true, forcePoll = false, notebookId } = options ?? {}
 
   const query = useQuery({
-    queryKey: QUERY_KEYS.podcastEpisodes,
-    queryFn: podcastsApi.listEpisodes,
+    queryKey: notebookId
+      ? [...QUERY_KEYS.podcastEpisodes, notebookId]
+      : QUERY_KEYS.podcastEpisodes,
+    queryFn: () => podcastsApi.listEpisodes(notebookId),
     refetchInterval: (current) => {
       if (!autoRefresh) {
         return false

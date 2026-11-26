@@ -13,12 +13,10 @@ import {
   SourceListResponse
 } from '@/lib/types/api'
 
-const NOTEBOOK_SOURCES_PAGE_SIZE = 30
-
 export function useSources(notebookId?: string) {
   return useQuery({
     queryKey: QUERY_KEYS.sources(notebookId),
-    queryFn: () => sourcesApi.list({ notebook_id: notebookId }),
+    queryFn: () => sourcesApi.list({ notebook_id: notebookId, limit: 0 }),
     enabled: !!notebookId,
     staleTime: 5 * 1000, // 5 seconds - more responsive for real-time source updates
     refetchOnWindowFocus: true, // Refetch when user comes back to the tab
@@ -26,25 +24,24 @@ export function useSources(notebookId?: string) {
 }
 
 /**
- * Hook for fetching notebook sources with infinite scroll pagination.
- * Returns flattened sources array and pagination controls.
+ * Hook for fetching all notebook sources (unlimited) so the scrollable Sources panel,
+ * Select All, RAG scoping, and chat source counters immediately see every source.
  */
 export function useNotebookSources(notebookId: string) {
   const queryClient = useQueryClient()
 
   const query = useInfiniteQuery({
     queryKey: QUERY_KEYS.sourcesInfinite(notebookId),
-    queryFn: async ({ pageParam = 0 }) => {
+    queryFn: async () => {
       const data = await sourcesApi.list({
         notebook_id: notebookId,
-        limit: NOTEBOOK_SOURCES_PAGE_SIZE,
-        offset: pageParam,
+        limit: 0,
         sort_by: 'updated',
         sort_order: 'desc',
       })
       return {
         sources: data,
-        nextOffset: data.length === NOTEBOOK_SOURCES_PAGE_SIZE ? pageParam + data.length : undefined,
+        nextOffset: undefined as number | undefined,
       }
     },
     initialPageParam: 0,

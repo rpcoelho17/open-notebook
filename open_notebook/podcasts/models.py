@@ -222,12 +222,33 @@ class SpeakerProfile(ObjectModel):
         return await cls.get_by_name(ref_str)
 
 
+_episode_notebook_field_ensured = False
+
+
+async def ensure_episode_notebook_field() -> None:
+    """Idempotently add optional notebook_id field to SCHEMAFULL episode table."""
+    global _episode_notebook_field_ensured
+    if _episode_notebook_field_ensured:
+        return
+    try:
+        await repo_query(
+            "DEFINE FIELD IF NOT EXISTS notebook_id ON TABLE episode TYPE option<string>;"
+        )
+        _episode_notebook_field_ensured = True
+    except Exception as e:
+        logger.warning(f"Could not ensure episode.notebook_id field: {e}")
+
+
 class PodcastEpisode(ObjectModel):
     """Enhanced PodcastEpisode with job tracking and metadata"""
 
     table_name: ClassVar[str] = "episode"
+    nullable_fields: ClassVar[set[str]] = {"notebook_id"}
 
     name: str = Field(..., description="Episode name")
+    notebook_id: Optional[str] = Field(
+        default=None, description="Owning notebook record ID"
+    )
     episode_profile: Dict[str, Any] = Field(
         ..., description="Episode profile used (stored as object)"
     )
@@ -344,3 +365,7 @@ class PodcastEpisode(ObjectModel):
             data["command"] = ensure_record_id(data["command"])
 
         return data
+
+    async def save(self) -> None:
+        await ensure_episode_notebook_field()
+        await super().save()

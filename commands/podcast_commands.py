@@ -132,6 +132,7 @@ class PodcastGenerationInput(CommandInput):
     episode_name: str
     content: str
     briefing_suffix: Optional[str] = None
+    notebook_id: Optional[str] = None
 
 
 class PodcastGenerationOutput(CommandOutput):
@@ -199,6 +200,7 @@ async def generate_podcast_command(
 
         episode = PodcastEpisode(
             name=input_data.episode_name,
+            notebook_id=input_data.notebook_id,
             episode_profile=full_model_dump(episode_profile.model_dump()),
             speaker_profile=full_model_dump(speaker_profile.model_dump()),
             command=ensure_record_id(input_data.execution_context.command_id)

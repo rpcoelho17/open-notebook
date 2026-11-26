@@ -109,6 +109,7 @@ def _delete_episode_audio(episode: PodcastEpisode, episode_id: str) -> None:
 class PodcastEpisodeResponse(BaseModel):
     id: str
     name: str
+    notebook_id: Optional[str] = None
     episode_profile: dict
     speaker_profile: dict
     briefing: str
@@ -171,10 +172,10 @@ async def get_podcast_job_status(job_id: str):
 
 
 @router.get("/podcasts/episodes", response_model=List[PodcastEpisodeResponse])
-async def list_podcast_episodes():
-    """List all podcast episodes"""
+async def list_podcast_episodes(notebook_id: Optional[str] = None):
+    """List podcast episodes, optionally filtered to a single notebook."""
     try:
-        episodes = await PodcastService.list_episodes()
+        episodes = await PodcastService.list_episodes(notebook_id=notebook_id)
 
         # Batch-fetch job status for every episode with a command in one
         # query instead of one round trip per episode (see
@@ -221,6 +222,7 @@ async def list_podcast_episodes():
                 PodcastEpisodeResponse(
                     id=str(episode.id),
                     name=episode.name,
+                    notebook_id=episode.notebook_id,
                     episode_profile=_with_resolved_model_fields(
                         episode.episode_profile,
                         _EPISODE_PROFILE_MODEL_FIELDS,
@@ -283,6 +285,7 @@ async def get_podcast_episode(episode_id: str):
         return PodcastEpisodeResponse(
             id=str(episode.id),
             name=episode.name,
+            notebook_id=episode.notebook_id,
             episode_profile=_with_resolved_model_fields(
                 episode.episode_profile,
                 _EPISODE_PROFILE_MODEL_FIELDS,
@@ -378,6 +381,7 @@ async def retry_podcast_episode(episode_id: str):
             episode_profile_name=ep_profile_name,
             speaker_profile_name=sp_profile_name,
             episode_name=episode_name,
+            notebook_id=episode.notebook_id,
             content=content,
         )
 

@@ -64,6 +64,8 @@ export interface SettingsResponse {
   docling_vision_model?: string | null
   docling_vision_prompt?: string | null
   youtube_preferred_languages?: string[]
+  export_clean_model?: string | null
+  export_clean_effort?: 'low' | 'medium' | 'high'
 }
 
 export interface Capabilities {

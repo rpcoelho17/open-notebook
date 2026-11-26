@@ -3,7 +3,7 @@ import hashlib
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse, urlunparse
 
 from content_core import check_file_support
@@ -18,7 +18,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, Response
 from loguru import logger
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from surreal_commands import execute_command_sync, submit_command
 
 from api.command_service import CommandService
@@ -54,6 +54,11 @@ from open_notebook.utils.github_ingest import (
     is_github_repo_url,
     parse_github_url,
     preview_github_repository,
+)
+from open_notebook.utils.source_export import (
+    ExportFormat,
+    build_sources_export_async,
+    sanitize_export_filename,
 )
 from open_notebook.exceptions import (
     InvalidInputError,
@@ -534,11 +539,86 @@ async def check_duplicates(payload: DuplicateCheckRequest):
     return DuplicateCheckResponse(duplicates=duplicates)
 
 
+class ExportSourcesRequest(BaseModel):
+    notebook_id: str
+    format: Optional[Literal["md", "txt"]] = None
+    filename: Optional[str] = None
+    excluded_source_ids: Optional[List[str]] = None
+    clean: bool = False
+
+
+class ExportSourcesResponse(BaseModel):
+    filename: str
+    format: Literal["md", "txt"]
+    source_count: int
+    char_count: int
+    original_char_count: int = 0
+    llm_cleaned_count: int = 0
+    cleaning_model: Optional[str] = None
+    cleaned: bool = False
+    content: str
+
+
+@router.post("/sources/export", response_model=ExportSourcesResponse)
+async def export_notebook_sources(payload: ExportSourcesRequest):
+    """Export all (or checked) sources from a notebook into a single RAG-ready .md or .txt file."""
+    try:
+        notebook = await Notebook.get(payload.notebook_id)
+    except Exception:
+        notebook = None
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    # Infer format from chosen filename extension first, falling back to payload.format -> 'md'
+    resolved_fmt: ExportFormat = "md"
+    if payload.filename and payload.filename.strip().lower().endswith(".txt"):
+        resolved_fmt = "txt"
+    elif payload.filename and payload.filename.strip().lower().endswith(".md"):
+        resolved_fmt = "md"
+    elif payload.format == "txt":
+        resolved_fmt = "txt"
+
+    sources = await notebook.get_sources(include_full_text=True)
+    excluded = set(payload.excluded_source_ids or [])
+    if excluded:
+        sources = [s for s in sources if str(s.id) not in excluded]
+
+    if not sources:
+        raise HTTPException(
+            status_code=400, detail="No sources available to export in this notebook."
+        )
+
+    content, stats = await build_sources_export_async(
+        notebook_name=notebook.name or "Notebook",
+        sources=sources,
+        fmt=resolved_fmt,
+        clean=payload.clean,
+    )
+    out_filename = (
+        payload.filename.strip()
+        if payload.filename and payload.filename.strip()
+        else sanitize_export_filename(notebook.name or "Notebook", resolved_fmt)
+    )
+    return ExportSourcesResponse(
+        filename=out_filename,
+        format=resolved_fmt,
+        source_count=len(sources),
+        char_count=int(stats["char_count"]),
+        original_char_count=int(stats["original_char_count"]),
+        llm_cleaned_count=int(stats["llm_cleaned_count"]),
+        cleaning_model=str(stats["cleaning_model"]) if stats.get("cleaning_model") else None,
+        cleaned=payload.clean,
+        content=content,
+    )
+
+
 @router.get("/sources", response_model=List[SourceListResponse])
 async def get_sources(
     notebook_id: Optional[str] = Query(None, description="Filter by notebook ID"),
-    limit: int = Query(
-        50, ge=1, le=100, description="Number of sources to return (1-100)"
+    limit: Optional[int] = Query(
+        None,
+        ge=0,
+        description="Maximum number of sources to return (0 or omitted = unlimited)",
     ),
     offset: int = Query(0, ge=0, description="Number of sources to skip"),
     sort_by: str = Query(
@@ -547,7 +627,7 @@ async def get_sources(
     ),
     sort_order: str = Query("desc", description="Sort order (asc or desc)"),
 ):
-    """Get sources with pagination and sorting support."""
+    """Get sources with optional pagination and sorting support."""
     try:
         # Validate sort parameters
         if sort_by not in SOURCE_SORT_FIELDS:
@@ -570,7 +650,16 @@ async def get_sources(
 
         # Build the query - same projection with or without the notebook
         # filter; only the FROM clause and bound params differ.
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        params: dict[str, Any] = {}
+        pagination_clauses: List[str] = []
+        if limit is not None and limit > 0:
+            pagination_clauses.append("LIMIT $limit")
+            params["limit"] = limit
+        if offset > 0:
+            pagination_clauses.append("START $offset")
+            params["offset"] = offset
+        pagination_clause = " ".join(pagination_clauses)
+
         if notebook_id:
             # Verify notebook exists first
             notebook = await Notebook.get(notebook_id)
@@ -591,7 +680,7 @@ async def get_sources(
             (SELECT VALUE id FROM source_embedding WHERE source = $parent.id LIMIT 1) != [] AS embedded
             FROM {from_clause}
             {order_clause}
-            LIMIT $limit START $offset
+            {pagination_clause}
             FETCH command
         """
         result = await repo_query(query, params)

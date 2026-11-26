@@ -312,6 +312,8 @@ class SettingsResponse(BaseModel):
     docling_vision_model: Optional[str] = None
     docling_vision_prompt: Optional[str] = None
     youtube_preferred_languages: Optional[List[str]] = None
+    export_clean_model: Optional[str] = None
+    export_clean_effort: Optional[str] = "low"
 
 
 class SettingsUpdate(BaseModel):
@@ -328,6 +330,9 @@ class SettingsUpdate(BaseModel):
     docling_vision_model: Optional[str] = None
     docling_vision_prompt: Optional[str] = None
     youtube_preferred_languages: Optional[List[str]] = None
+    # Empty string or "auto" resets to automatic cheapest/fastest model selection.
+    export_clean_model: Optional[str] = None
+    export_clean_effort: Optional[str] = None
 
 
 # Sources API models

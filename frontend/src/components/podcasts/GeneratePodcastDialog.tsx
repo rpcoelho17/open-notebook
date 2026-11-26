@@ -516,11 +516,23 @@ export function GeneratePodcastDialog({
         return
       }
 
+      const selectedNotebookIds = Object.entries(selections)
+        .filter(([, sel]) => {
+          const hasSources = Object.values(sel.sources).some((mode) => mode !== 'off')
+          const hasNotes = Object.values(sel.notes).some((mode) => mode !== 'off')
+          return hasSources || hasNotes
+        })
+        .map(([id]) => id)
+
+      const owningNotebookId =
+        defaultNotebookId ?? (selectedNotebookIds.length === 1 ? selectedNotebookIds[0] : undefined)
+
       const payload: PodcastGenerationRequest = {
         episode_profile: selectedEpisodeProfile.name,
         speaker_profile: speakerProfileRef,
         episode_name: episodeName.trim(),
         content,
+        notebook_id: owningNotebookId,
         briefing_suffix: instructions.trim() ? instructions.trim() : undefined,
       }
 
@@ -544,12 +556,15 @@ export function GeneratePodcastDialog({
     }
   }, [
     buildContentFromSelections,
+    defaultNotebookId,
     episodeName,
     generatePodcast,
     instructions,
     onOpenChange,
+    onPodcastSubmitted,
     resetState,
     selectedEpisodeProfile,
+    selections,
     toast,
     t,
   ])

@@ -37,6 +37,8 @@ async def get_settings():
             docling_vision_model=settings.docling_vision_model,
             docling_vision_prompt=settings.docling_vision_prompt,
             youtube_preferred_languages=settings.youtube_preferred_languages,
+            export_clean_model=settings.export_clean_model,
+            export_clean_effort=settings.export_clean_effort or "low",
         )
     except HTTPException:
         raise
@@ -115,6 +117,22 @@ async def update_settings(settings_update: SettingsUpdate):
             settings.youtube_preferred_languages = (
                 settings_update.youtube_preferred_languages
             )
+        if settings_update.export_clean_model is not None:
+            cleaned_model = _blank_to_none(settings_update.export_clean_model)
+            settings.export_clean_model = (
+                None if (not cleaned_model or cleaned_model.lower() == "auto") else cleaned_model
+            )
+        if settings_update.export_clean_effort is not None:
+            from typing import Literal, cast
+
+            effort_val = settings_update.export_clean_effort.strip().lower()
+            if effort_val not in ("low", "medium", "high"):
+                raise InvalidInputError(
+                    "export_clean_effort must be one of: low, medium, high"
+                )
+            settings.export_clean_effort = cast(
+                Literal["low", "medium", "high"], effort_val
+            )
 
         await settings.update()
 
@@ -130,6 +148,8 @@ async def update_settings(settings_update: SettingsUpdate):
             docling_vision_model=settings.docling_vision_model,
             docling_vision_prompt=settings.docling_vision_prompt,
             youtube_preferred_languages=settings.youtube_preferred_languages,
+            export_clean_model=settings.export_clean_model,
+            export_clean_effort=settings.export_clean_effort or "low",
         )
     except HTTPException:
         raise

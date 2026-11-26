@@ -113,6 +113,7 @@ class PodcastService:
                 "episode_name": episode_name,
                 "content": str(content),
                 "briefing_suffix": briefing_suffix,
+                "notebook_id": notebook_id,
             }
 
             # Ensure command modules are imported before submitting
@@ -169,10 +170,14 @@ class PodcastService:
             raise HTTPException(status_code=500, detail="Failed to get job status")
 
     @staticmethod
-    async def list_episodes() -> list:
-        """List all podcast episodes"""
+    async def list_episodes(notebook_id: Optional[str] = None) -> list:
+        """List podcast episodes, optionally scoped to a single notebook."""
         try:
             episodes = await PodcastEpisode.get_all(order_by="created desc")
+            if notebook_id:
+                episodes = [
+                    ep for ep in episodes if ep.notebook_id == notebook_id
+                ]
             return episodes
         except Exception as e:
             logger.error(f"Failed to list podcast episodes: {e}")

@@ -27,6 +27,7 @@ import {
   useModelDefaults,
   useUpdateModelDefaults,
 } from '@/lib/hooks/use-models'
+import { useSettings, useUpdateSettings } from '@/lib/hooks/use-settings'
 import { Settings2, Cpu, Volume2, Sparkles, ExternalLink, Check, Bot, AudioLines } from 'lucide-react'
 
 interface NotebookSettingsDialogProps {
@@ -55,6 +56,8 @@ export function NotebookSettingsDialog({ open, onOpenChange }: NotebookSettingsD
   const { data: allModels = [] } = useModels()
   const { data: modelDefaults } = useModelDefaults()
   const updateModelDefaults = useUpdateModelDefaults()
+  const { data: appSettings } = useSettings()
+  const updateAppSettings = useUpdateSettings()
 
   const [geminiConfigured, setGeminiConfigured] = useState<boolean | null>(null)
 
@@ -366,6 +369,52 @@ export function NotebookSettingsDialog({ open, onOpenChange }: NotebookSettingsD
                   </button>
                 )
               })}
+            </div>
+          </div>
+
+          {/* Export & Clean AI Model + Effort */}
+          <div className="space-y-2.5 p-3 rounded-xl bg-[#141518] border border-[#2b2d32]">
+            <Label className="text-xs font-medium text-[#9aa0a6] uppercase tracking-wider flex items-center gap-1.5">
+              <Sparkles className="h-3.5 w-3.5 text-[#8ab4f8]" /> Export &amp; Clean AI Model
+            </Label>
+            <select
+              aria-label="Export and Clean AI Model"
+              value={appSettings?.export_clean_model || 'auto'}
+              onChange={(e) => {
+                updateAppSettings.mutate({ export_clean_model: e.target.value })
+              }}
+              className="w-full h-9 rounded-lg bg-[#1c1d20] border border-[#2f3136] px-2.5 text-xs text-[#e8eaed] focus:outline-none focus:border-[#8ab4f8]"
+            >
+              <option value="auto">
+                Auto — Cheapest &amp; fastest for provider (e.g. Luna / Haiku / Flash)
+              </option>
+              {chatModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.provider})
+                </option>
+              ))}
+            </select>
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <span className="text-[11px] text-[#9aa0a6]">Cleaning Effort</span>
+              <div className="flex items-center gap-1.5">
+                {(['low', 'medium', 'high'] as const).map((eff) => {
+                  const active = (appSettings?.export_clean_effort || 'low') === eff
+                  return (
+                    <button
+                      key={eff}
+                      type="button"
+                      onClick={() => updateAppSettings.mutate({ export_clean_effort: eff })}
+                      className={`px-2.5 py-1 rounded-full text-[11px] capitalize border transition-colors ${
+                        active
+                          ? 'bg-[#8ab4f8] text-[#0e0f12] font-medium border-[#8ab4f8]'
+                          : 'bg-[#1c1d20] text-[#c4c7c5] border-[#2f3136] hover:bg-[#25262b]'
+                      }`}
+                    >
+                      {eff}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
 

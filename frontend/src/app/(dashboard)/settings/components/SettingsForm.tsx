@@ -14,6 +14,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { useSettings, useUpdateSettings } from '@/lib/hooks/use-settings'
+import { useModels } from '@/lib/hooks/use-models'
 import { useCapabilities } from '@/lib/hooks/use-capabilities'
 import { useDismissibleWarning } from '@/lib/hooks/use-dismissible-warning'
 import { useAuthStore } from '@/lib/stores/auth-store'
@@ -32,6 +33,8 @@ const settingsSchema = z.object({
   docling_vision_url: z.string().optional(),
   docling_vision_model: z.string().optional(),
   docling_vision_prompt: z.string().optional(),
+  export_clean_model: z.string().optional(),
+  export_clean_effort: z.enum(['low', 'medium', 'high']).optional(),
 })
 
 type SettingsFormData = z.infer<typeof settingsSchema>
@@ -44,6 +47,8 @@ export function SettingsForm() {
     authRequired === false
   )
   const { data: settings, isLoading, error } = useSettings()
+  const { data: allModels = [] } = useModels()
+  const languageModels = allModels.filter(m => m.type === 'language')
   const { data: capabilities, isError: capabilitiesError } = useCapabilities()
   const updateSettings = useUpdateSettings()
   // Opt-in heavy runtimes are installed on demand at container startup, so an
@@ -83,6 +88,8 @@ export function SettingsForm() {
       docling_vision_url: undefined,
       docling_vision_model: undefined,
       docling_vision_prompt: undefined,
+      export_clean_model: 'auto',
+      export_clean_effort: 'low',
     }
   })
   // The vision endpoint fields only matter while image description is on.
@@ -106,6 +113,8 @@ export function SettingsForm() {
         docling_vision_url: settings.docling_vision_url ?? '',
         docling_vision_model: settings.docling_vision_model ?? '',
         docling_vision_prompt: settings.docling_vision_prompt ?? '',
+        export_clean_model: settings.export_clean_model || 'auto',
+        export_clean_effort: (settings.export_clean_effort as 'low' | 'medium' | 'high') || 'low',
       }
       reset(formData)
       setHasResetForm(true)
@@ -420,6 +429,75 @@ export function SettingsForm() {
                 <p>{t('settings.filesHelp')}</p>
               </CollapsibleContent>
             </Collapsible>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Source Export &amp; AI Cleaning</CardTitle>
+          <CardDescription>
+            Choose the model and reasoning effort used when &ldquo;Export and clean&rdquo; removes
+            boilerplate and formats sources for RAG. Defaults to the cheapest, fastest model for
+            your active provider at low effort (e.g., Luna for OpenAI, Haiku for Claude, Flash for Gemini).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="space-y-3">
+            <Label htmlFor="export_clean_model">Export &amp; Clean AI Model</Label>
+            <Controller
+              name="export_clean_model"
+              control={control}
+              render={({ field }) => (
+                <Select
+                  key={field.value}
+                  name={field.name}
+                  value={field.value || 'auto'}
+                  onValueChange={field.onChange}
+                  disabled={field.disabled || isLoading}
+                >
+                  <SelectTrigger id="export_clean_model" className="w-full">
+                    <SelectValue placeholder="Auto (Cheapest & fastest for provider)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">
+                      Auto — Cheapest &amp; fastest for active provider (Recommended)
+                    </SelectItem>
+                    {languageModels.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.name} ({m.provider})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </div>
+
+          <div className="space-y-3">
+            <Label htmlFor="export_clean_effort">Export &amp; Clean Reasoning Effort</Label>
+            <Controller
+              name="export_clean_effort"
+              control={control}
+              render={({ field }) => (
+                <Select
+                  key={field.value}
+                  name={field.name}
+                  value={field.value || 'low'}
+                  onValueChange={field.onChange}
+                  disabled={field.disabled || isLoading}
+                >
+                  <SelectTrigger id="export_clean_effort" className="w-full">
+                    <SelectValue placeholder="Low (Recommended)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="low">Low (Recommended — fastest &amp; cheapest)</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            />
           </div>
         </CardContent>
       </Card>

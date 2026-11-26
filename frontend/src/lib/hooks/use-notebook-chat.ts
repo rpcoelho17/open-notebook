@@ -189,6 +189,11 @@ export function useNotebookChat({ notebookId, sources, notes, contextSelections 
     modelOverride?: string,
     extraContext?: Record<string, unknown>
   ) => {
+    // Reject overlapping sends synchronously so concurrent RAG/Enter triggers
+    // can never append duplicate HumanMessages to the same checkpoint.
+    if (sendingRef.current) {
+      return false
+    }
     // Mark sending before any await (including session creation) so the
     // composer and session switcher stay disabled for the whole send (#1597).
     sendingRef.current = true

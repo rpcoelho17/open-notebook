@@ -187,6 +187,7 @@ export function StudioColumn({
   const { episodes = [] } = usePodcastEpisodes({
     autoRefresh: true,
     forcePoll: !!pendingPodcastName,
+    notebookId,
   })
 
   // Inline Studio audio player state

@@ -247,6 +247,9 @@ export function ChatColumn({
   const [isTranscribingChunk, setIsTranscribingChunk] = useState(false)
   const [isStreamingVoiceReply, setIsStreamingVoiceReply] = useState(false)
   const [isAiSpeaking, setIsAiSpeaking] = useState(false)
+  const [isGeminiThinking, setIsGeminiThinking] = useState(false)
+  const geminiRagModeRef = useRef(false)
+  const geminiUserWasSpeakingRef = useRef(false)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingContent, setEditingContent] = useState('')
   const [isSavingEdit, setIsSavingEdit] = useState(false)
@@ -261,6 +264,9 @@ export function ChatColumn({
   const [sessionManagerOpen, setSessionManagerOpen] = useState(false)
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const [isSearchingWeb, setIsSearchingWeb] = useState(false)
+  const [isPreparingSend, setIsPreparingSend] = useState(false)
+  const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null)
+  const sendInFlightRef = useRef(false)
   const toolsMenuRef = useRef<HTMLDivElement>(null)
 
   // Composer state
@@ -1010,8 +1016,11 @@ export function ChatColumn({
   const stopGeminiLiveSession = useCallback(() => {
     voiceActiveRef.current = false
     isRespondingRef.current = false
+    geminiRagModeRef.current = false
+    geminiUserWasSpeakingRef.current = false
     setVoiceModeActive(false)
     setIsStreamingVoiceReply(false)
+    setIsGeminiThinking(false)
     setGeminiConnecting(false)
     stopGeminiLivePlayback()
     stopMicCapture()
@@ -1194,32 +1203,54 @@ export function ChatColumn({
         mediaStreamRef.current = handsFreeStream
       }
 
-      // Hybrid RAG setup: full text for short sources (<=35k), Opening/TOC (12k) for large textbooks
+      // Adaptive context strategy for Gemini Live:
+      // - Small notebooks (<= 40k total source chars, no large books/repos): pre-load full text
+      //   for instant replies and zero retrieval misses.
+      // - Large notebooks (> 40k chars or large books/repos): send only a lightweight Source Catalog
+      //   in system_instruction and retrieve only meaningful RAG chunks per question (Press ↑ runs
+      //   RAG directly; Hands-free uses the backend `search_notebook` Live tool call).
+      const LIVE_FULL_CONTEXT_THRESHOLD = 40_000
+      const MAX_LIVE_NOTES_CHARS = 12_000
       const sourceEntries = await loadCheckedSourceSummaries()
-      const sourcesText = sourceEntries
-        .map((e) =>
-          e.text.trim()
-            ? e.isLarge
-              ? `[Source (Table of Contents / Opening of ${e.fullLen.toLocaleString()}-char book): ${e.title}]\n${e.text}`
-              : `[Source: ${e.title}]\n${e.text}`
-            : `[Source: ${e.title}]\n(No extracted text available)`
-        )
-        .join('\n\n')
+      const totalFullChars = sourceEntries.reduce((sum, e) => sum + e.fullLen, 0)
+      const hasLargeSource = sourceEntries.some((e) => e.isLarge)
+      const useRagMode = totalFullChars > LIVE_FULL_CONTEXT_THRESHOLD || hasLargeSource
+      geminiRagModeRef.current = useRagMode
+
+      const checkedSourceIds = sources
+        .filter((s) => (contextSelections.sources[s.id] ?? 'off') !== 'off')
+        .map((s) => s.id)
+      const allowedParentIds = [...checkedSourceIds, ...notes.map((n) => n.id)]
 
       const ctx = await chat.buildContext()
-      const notesText = ((ctx?.notes as Array<Record<string, unknown>>) || [])
-        .map(
-          (n) =>
-            `[Note: ${n.title || n.id || 'Untitled'}]\n${String(n.content || n.text || '').slice(
-              0,
-              6000
-            )}`
-        )
-        .join('\n\n')
+      const rawNotes = (ctx?.notes as Array<Record<string, unknown>>) || []
 
-      const systemInstruction = `You are a knowledgeable, helpful voice research assistant for the notebook "${
-        notebook?.name || 'Notebook'
-      }".
+      let systemInstruction: string
+      if (!useRagMode) {
+        const sourcesText = sourceEntries
+          .map((e) =>
+            e.text.trim()
+              ? `[Source: ${e.title}]\n${e.text}`
+              : `[Source: ${e.title}]\n(No extracted text available)`
+          )
+          .join('\n\n')
+        const rawNotesText = rawNotes
+          .map(
+            (n) =>
+              `[Note: ${n.title || n.id || 'Untitled'}]\n${String(n.content || n.text || '').slice(
+                0,
+                6000
+              )}`
+          )
+          .join('\n\n')
+        const notesText =
+          rawNotesText.length > MAX_LIVE_NOTES_CHARS
+            ? `${rawNotesText.slice(0, MAX_LIVE_NOTES_CHARS)}\n...[additional notes truncated]`
+            : rawNotesText
+
+        systemInstruction = `You are a knowledgeable, helpful voice research assistant for the notebook "${
+          notebook?.name || 'Notebook'
+        }".
 Answer the user's spoken or typed questions directly based on the complete notebook sources and notes below.
 Give clear, thorough, well-explained spoken answers — cite specific source names, numbers, and concrete details whenever relevant, and speak in natural conversational sentences rather than overly terse one-liners.
 
@@ -1232,6 +1263,35 @@ NOTEBOOK NOTES:
 ---
 ${notesText.trim() || 'No notes available.'}
 ---`
+      } else {
+        const catalogLines = sourceEntries.map((e, i) => {
+          const preview = e.text.replace(/\s+/g, ' ').trim().slice(0, 180)
+          return `${i + 1}. ${e.title}${preview ? ` — ${preview}...` : ''}`
+        })
+        const noteTitles = rawNotes
+          .map((n) => `- ${String(n.title || n.id || 'Untitled')}`)
+          .join('\n')
+
+        systemInstruction = `You are a knowledgeable, helpful voice research assistant for the notebook "${
+          notebook?.name || 'Notebook'
+        }".
+This notebook contains ${sourceEntries.length} checked sources (~${totalFullChars.toLocaleString()} chars total), so full source content is retrieved on demand via RAG rather than pre-loaded here.
+
+CRITICAL GROUNDING RULES:
+1. If the user's turn includes "TOP VECTOR-RETRIEVED PASSAGES FROM THIS NOTEBOOK", answer directly from those passages and cite the source names.
+2. If the user speaks a question without attached passages (hands-free voice), you MUST call the \`search_notebook\` tool with a focused search query BEFORE answering any factual question about the notebook.
+3. Give clear, thorough, natural spoken answers grounded in the retrieved passages, citing source titles and concrete details.
+
+SOURCE CATALOG (${sourceEntries.length} checked sources):
+---
+${catalogLines.join('\n') || 'No source documents selected.'}
+---
+
+NOTEBOOK NOTES:
+---
+${noteTitles || 'No notes available.'}
+---`
+      }
 
       const wsHost =
         typeof window !== 'undefined' ? window.location.hostname || '127.0.0.1' : '127.0.0.1'
@@ -1241,6 +1301,7 @@ ${notesText.trim() || 'No notes available.'}
       geminiUserBufRef.current = ''
       geminiUserCommittedRef.current = false
       geminiAiBufRef.current = ''
+      geminiUserWasSpeakingRef.current = false
 
       const AudioCtx =
         window.AudioContext ||
@@ -1256,6 +1317,9 @@ ${notesText.trim() || 'No notes available.'}
             model: 'gemini-2.5-flash-native-audio-latest',
             voice: geminiVoiceRef.current || 'Kore',
             system_instruction: systemInstruction,
+            enable_rag_tool: useRagMode,
+            notebook_id: notebookId,
+            allowed_parent_ids: allowedParentIds,
           })
         )
       }
@@ -1295,15 +1359,26 @@ ${notesText.trim() || 'No notes available.'}
                 const now = Date.now()
                 if (rms > 0.015) {
                   geminiLastVoiceActivityRef.current = now
+                  geminiUserWasSpeakingRef.current = true
                 }
                 if (now - geminiLastVoiceActivityRef.current <= 1200) {
                   const b64 = floatTo16kPcmBase64(inputData, micCtx.sampleRate)
                   ws.send(JSON.stringify({ type: 'audio', data: b64 }))
+                } else if (geminiUserWasSpeakingRef.current) {
+                  geminiUserWasSpeakingRef.current = false
+                  // User finished speaking — immediately show "Thinking..." while RAG/LLM runs
+                  if (geminiUserBufRef.current.trim()) {
+                    setIsGeminiThinking(true)
+                  }
                 }
               }
 
               micSrc.connect(processor)
               processor.connect(micCtx.destination)
+            }
+          } else if (msg.type === 'status') {
+            if (msg.status === 'searching_sources') {
+              setIsGeminiThinking(true)
             }
           } else if (msg.type === 'input_transcript' && msg.text) {
             if (!isManualMode && !geminiAiSpeakingRef.current && Date.now() >= geminiEchoTailUntilRef.current) {
@@ -1311,6 +1386,7 @@ ${notesText.trim() || 'No notes available.'}
               setInput(geminiUserBufRef.current.trim())
             }
           } else if (msg.type === 'output_transcript' && msg.text) {
+            setIsGeminiThinking(false)
             if (!geminiAiSpeakingRef.current) {
               // If a previous turn's reveal was still pending commit, flush it cleanly first
               if (geminiPendingCommitRef.current) {
@@ -1349,6 +1425,7 @@ ${notesText.trim() || 'No notes available.'}
             }
             startGeminiRevealLoop()
           } else if (msg.type === 'audio' && msg.data) {
+            setIsGeminiThinking(false)
             if (!geminiAiSpeakingRef.current) {
               if (geminiPendingCommitRef.current) {
                 flushPendingGeminiReveal()
@@ -1424,8 +1501,11 @@ ${notesText.trim() || 'No notes available.'}
               }, remainMs)
             }
           } else if (msg.type === 'interrupted') {
+            setIsGeminiThinking(false)
             stopGeminiLivePlayback()
           } else if (msg.type === 'turn_complete') {
+            setIsGeminiThinking(false)
+            geminiUserWasSpeakingRef.current = false
             const audioStillPlaying = Boolean(geminiSpeakingTimerRef.current)
             const userText = geminiUserBufRef.current.trim()
             const alreadyCommitted = geminiUserCommittedRef.current
@@ -1497,6 +1577,10 @@ ${notesText.trim() || 'No notes available.'}
     chat,
     loadCheckedSourceSummaries,
     notebook?.name,
+    notebookId,
+    sources,
+    contextSelections.sources,
+    notes,
     startInlineVoiceMode,
     stopGeminiLivePlayback,
     stopGeminiLiveSession,
@@ -1692,10 +1776,23 @@ ${notesText.trim() || 'No notes available.'}
     const totalCount = chat.messages.length + voiceTurns.length
     const prevCount = prevTotalMessagesRef.current
     prevTotalMessagesRef.current = totalCount
-    if (totalCount > prevCount || streamingReplyText || geminiRevealedWords) {
+    if (
+      totalCount > prevCount ||
+      pendingUserMessage ||
+      isGeminiThinking ||
+      streamingReplyText ||
+      geminiRevealedWords
+    ) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [chat.messages.length, voiceTurns.length, streamingReplyText, geminiRevealedWords])
+  }, [
+    chat.messages.length,
+    voiceTurns.length,
+    pendingUserMessage,
+    isGeminiThinking,
+    streamingReplyText,
+    geminiRevealedWords,
+  ])
 
   // Save any summary or chat reply (optionally paired with the user's question) as a 1-line card in Studio
   const handleSaveToNote = async (itemId: string, content: string, question?: string) => {
@@ -2157,134 +2254,165 @@ ${notesText.trim() || 'No notes available.'}
 
   const handleSend = async () => {
     const trimmed = input.trim()
-    if (!trimmed || chat.isSending || isSearchingWeb || isStreamingVoiceReply) return
-
-    // If Voice Mode (blue wavy icon) is ON:
-    if (voiceModeActive) {
-      if (
-        engineRef.current === 'gemini-live' &&
-        geminiWsRef.current &&
-        geminiWsRef.current.readyState === WebSocket.OPEN
-      ) {
-        isRespondingRef.current = true
-        setIsStreamingVoiceReply(true)
-        pauseDictationForAi()
-        geminiUserBufRef.current = trimmed
-        geminiUserCommittedRef.current = true
-        geminiAiBufRef.current = ''
-        appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: trimmed })
-        setInput('')
-        committedDictationRef.current = ''
-
-        // Hybrid Vector RAG: retrieve top matching passages from checked sources in this notebook
-        const ragBlock = await retrieveNotebookRagBlock(trimmed, 45000)
-
-        let webPrefix = ''
-        if (webSearchEnabled) {
-          setIsSearchingWeb(true)
-          try {
-            const searchRes = await fetch(BRIDGE_SEARCH_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query: trimmed, num_results: 5, max_characters: 4500 }),
-            })
-            if (searchRes.ok) {
-              const searchData = await searchRes.json()
-              const items = Array.isArray(searchData?.results) ? searchData.results : []
-              if (items.length > 0) {
-                const webBlock = items
-                  .map(
-                    (r: { title?: string; url?: string; text?: string }) =>
-                      `[${r.title || r.url}](${r.url})\n${r.text || ''}`
-                  )
-                  .join('\n\n')
-                webPrefix = `LIVE WEB SEARCH RESULTS (EXA):\n${webBlock}\n\n`
-              }
-            }
-          } catch (err) {
-            console.error('Exa search error in Gemini Live:', err)
-          } finally {
-            setIsSearchingWeb(false)
-          }
-        }
-
-        const ragPrefix = ragBlock
-          ? `TOP VECTOR-RETRIEVED PASSAGES FROM THIS NOTEBOOK:\n${ragBlock}\n\n`
-          : ''
-        const payloadText =
-          ragPrefix || webPrefix
-            ? `${ragPrefix}${webPrefix}USER QUESTION: ${trimmed}`
-            : trimmed
-
-        if (geminiWsRef.current && geminiWsRef.current.readyState === WebSocket.OPEN) {
-          geminiWsRef.current.send(JSON.stringify({ type: 'text', text: payloadText }))
-        }
-        return
-      }
-      await handleSendStreamingVoice(trimmed)
+    if (
+      !trimmed ||
+      sendInFlightRef.current ||
+      chat.isSending ||
+      isPreparingSend ||
+      isSearchingWeb ||
+      isStreamingVoiceReply
+    ) {
       return
     }
 
-    const extraContext: Record<string, unknown> = {}
-    // Hybrid Vector RAG for Typed Chat (critical for large textbooks that exceed raw prompt limits)
-    const [ragBlock, sourceEntries] = await Promise.all([
-      retrieveNotebookRagBlock(trimmed, 80000),
-      loadCheckedSourceSummaries(),
-    ])
-    if (ragBlock) {
-      extraContext.hybrid_vector_rag_note =
-        'Top vector-matched passages retrieved via bge-base-en-v1.5 from the active notebook sources for this question. Prioritize these exact passages and cite chapters/sources accurately.'
-      extraContext.vector_rag_passages = ragBlock
-    }
-    const largeBookTocs = sourceEntries
-      .filter((e) => e.isLarge && e.text.trim())
-      .map((e) => `[Table of Contents / Opening of ${e.title}]\n${e.text}`)
-      .join('\n\n')
-    if (largeBookTocs) {
-      extraContext.textbook_table_of_contents = largeBookTocs
-    }
+    sendInFlightRef.current = true
+    try {
+      // If Voice Mode (blue wavy icon) is ON:
+      if (voiceModeActive) {
+        if (
+          engineRef.current === 'gemini-live' &&
+          geminiWsRef.current &&
+          geminiWsRef.current.readyState === WebSocket.OPEN
+        ) {
+          isRespondingRef.current = true
+          setIsStreamingVoiceReply(true)
+          setIsGeminiThinking(true)
+          pauseDictationForAi()
+          geminiUserBufRef.current = trimmed
+          geminiUserCommittedRef.current = true
+          geminiAiBufRef.current = ''
+          appendVoiceTurn({ id: `voice-user-${Date.now()}`, type: 'human', content: trimmed })
+          setInput('')
+          committedDictationRef.current = ''
 
-    if (webSearchEnabled) {
-      setIsSearchingWeb(true)
-      try {
-        const res = await fetch(BRIDGE_SEARCH_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: trimmed,
-            num_results: 5,
-            max_characters: 4500,
-          }),
-        })
-        if (res.ok) {
-          const data = await res.json()
-          const results = Array.isArray(data?.results) ? data.results : []
-          if (results.length > 0) {
-            extraContext.web_search_note =
-              'Live web search (Exa) is enabled for this turn. You have full page contents below in web_search_results. Synthesize them alongside the notebook sources and include clickable markdown links [Title](url) when citing web pages.'
-            extraContext.web_search_results = results
+          // Adaptive RAG: in large notebooks (>40k chars), retrieve only the top meaningful chunks
+          // for this question; in small notebooks, full text is already in system_instruction!
+          const ragBlock = geminiRagModeRef.current
+            ? await retrieveNotebookRagBlock(trimmed, 22000)
+            : ''
+
+          let webPrefix = ''
+          if (webSearchEnabled) {
+            setIsSearchingWeb(true)
+            try {
+              const searchRes = await fetch(BRIDGE_SEARCH_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: trimmed, num_results: 5, max_characters: 4500 }),
+              })
+              if (searchRes.ok) {
+                const searchData = await searchRes.json()
+                const items = Array.isArray(searchData?.results) ? searchData.results : []
+                if (items.length > 0) {
+                  const webBlock = items
+                    .map(
+                      (r: { title?: string; url?: string; text?: string }) =>
+                        `[${r.title || r.url}](${r.url})\n${r.text || ''}`
+                    )
+                    .join('\n\n')
+                  webPrefix = `LIVE WEB SEARCH RESULTS (EXA):\n${webBlock}\n\n`
+                }
+              }
+            } catch (err) {
+              console.error('Exa search error in Gemini Live:', err)
+            } finally {
+              setIsSearchingWeb(false)
+            }
           }
-        } else {
-          toast.error('Exa web search failed; answering from notebook sources only.')
-        }
-      } catch (err) {
-        console.error('Exa search error:', err)
-        toast.error('Web search unreachable; answering from notebook sources only.')
-      } finally {
-        setIsSearchingWeb(false)
-      }
-    }
 
-    const ok = await chat.sendMessage(
-      trimmed,
-      undefined,
-      Object.keys(extraContext).length > 0 ? extraContext : undefined
-    )
-    if (ok) {
+          const ragPrefix = ragBlock
+            ? `TOP VECTOR-RETRIEVED PASSAGES FROM THIS NOTEBOOK:\n${ragBlock}\n\n`
+            : ''
+          const payloadText =
+            ragPrefix || webPrefix
+              ? `${ragPrefix}${webPrefix}USER QUESTION: ${trimmed}`
+              : trimmed
+
+          if (geminiWsRef.current && geminiWsRef.current.readyState === WebSocket.OPEN) {
+            geminiWsRef.current.send(JSON.stringify({ type: 'text', text: payloadText }))
+          }
+          return
+        }
+        await handleSendStreamingVoice(trimmed)
+        return
+      }
+
+      // Immediately lock composer, clear input, and show the user's message while RAG/search runs
+      setIsPreparingSend(true)
+      setPendingUserMessage(trimmed)
       setInput('')
+      committedDictationRef.current = ''
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto'
       }
+
+      const extraContext: Record<string, unknown> = {}
+      // Hybrid Vector RAG for Typed Chat (critical for large textbooks that exceed raw prompt limits)
+      const [ragBlock, sourceEntries] = await Promise.all([
+        retrieveNotebookRagBlock(trimmed, 80000),
+        loadCheckedSourceSummaries(),
+      ])
+      if (ragBlock) {
+        extraContext.hybrid_vector_rag_note =
+          'Top vector-matched passages retrieved via bge-base-en-v1.5 from the active notebook sources for this question. Prioritize these exact passages and cite chapters/sources accurately.'
+        extraContext.vector_rag_passages = ragBlock
+      }
+      const largeBookTocs = sourceEntries
+        .filter((e) => e.isLarge && e.text.trim())
+        .map((e) => `[Table of Contents / Opening of ${e.title}]\n${e.text}`)
+        .join('\n\n')
+      if (largeBookTocs) {
+        extraContext.textbook_table_of_contents = largeBookTocs
+      }
+
+      if (webSearchEnabled) {
+        setIsSearchingWeb(true)
+        try {
+          const res = await fetch(BRIDGE_SEARCH_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              query: trimmed,
+              num_results: 5,
+              max_characters: 4500,
+            }),
+          })
+          if (res.ok) {
+            const data = await res.json()
+            const results = Array.isArray(data?.results) ? data.results : []
+            if (results.length > 0) {
+              extraContext.web_search_note =
+                'Live web search (Exa) is enabled for this turn. You have full page contents below in web_search_results. Synthesize them alongside the notebook sources and include clickable markdown links [Title](url) when citing web pages.'
+              extraContext.web_search_results = results
+            }
+          } else {
+            toast.error('Exa web search failed; answering from notebook sources only.')
+          }
+        } catch (err) {
+          console.error('Exa search error:', err)
+          toast.error('Web search unreachable; answering from notebook sources only.')
+        } finally {
+          setIsSearchingWeb(false)
+        }
+      }
+
+      // Hand off optimistic user bubble cleanly to chat.sendMessage
+      setPendingUserMessage(null)
+      const ok = await chat.sendMessage(
+        trimmed,
+        undefined,
+        Object.keys(extraContext).length > 0 ? extraContext : undefined
+      )
+      if (!ok) {
+        setInput((prev) => (prev ? prev : trimmed))
+      }
+    } catch (err) {
+      console.error('Error preparing chat send:', err)
+      setInput((prev) => (prev ? prev : trimmed))
+    } finally {
+      setPendingUserMessage(null)
+      setIsPreparingSend(false)
+      sendInFlightRef.current = false
     }
   }
 
@@ -2332,7 +2460,7 @@ ${notesText.trim() || 'No notes available.'}
     ...voiceTurns,
   ]
 
-  const isBusy = chat.isSending || isSearchingWeb || isStreamingVoiceReply
+  const isBusy = chat.isSending || isPreparingSend || isSearchingWeb || isStreamingVoiceReply
 
   return (
     <>
@@ -2450,7 +2578,7 @@ ${notesText.trim() || 'No notes available.'}
             </div>
 
             {/* Divider if conversation started */}
-            {(allDisplayMessages.length > 0 || streamingReplyText || geminiRevealedWords) && (
+            {(allDisplayMessages.length > 0 || pendingUserMessage || streamingReplyText || geminiRevealedWords) && (
               <div className="border-t border-[#23252b]" />
             )}
 
@@ -2637,6 +2765,15 @@ ${notesText.trim() || 'No notes available.'}
                 )
               })}
 
+              {/* Immediate optimistic user bubble while RAG/web search prepares the send */}
+              {pendingUserMessage && (
+                <div className="flex items-center justify-end gap-1.5">
+                  <div className="max-w-[82%] rounded-2xl bg-[#25262b] border border-[#32343a] px-4 py-2.5 text-[14px] text-[#e8eaed] leading-relaxed">
+                    {pendingUserMessage}
+                  </div>
+                </div>
+              )}
+
               {/* Live Gemini Live Sequential Word-by-Word Reveal (active spoken word bolded!) */}
               {geminiRevealedWords ? (
                 <div className="space-y-2">
@@ -2655,6 +2792,7 @@ ${notesText.trim() || 'No notes available.'}
 
               {/* Status indicator (Searching / Thinking / Speaking) */}
               {(isSearchingWeb ||
+                (isGeminiThinking && !isAiSpeaking && !geminiRevealedWords) ||
                 (isBusy && !streamingReplyText && !geminiRevealedWords) ||
                 isAiSpeaking) && (
                 <div className="flex items-center gap-2.5 text-xs text-[#9aa0a6] py-1">
@@ -2687,7 +2825,13 @@ ${notesText.trim() || 'No notes available.'}
                     <>
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8ab4f8]" />
                       <span>
-                        {isSearchingWeb ? 'Searching the web with Exa...' : 'Thinking...'}
+                        {isSearchingWeb
+                          ? 'Searching the web with Exa...'
+                          : isGeminiThinking
+                          ? 'Thinking...'
+                          : isPreparingSend && !chat.isSending
+                          ? 'Searching sources...'
+                          : 'Thinking...'}
                       </span>
                     </>
                   )}

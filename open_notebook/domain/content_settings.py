@@ -70,3 +70,15 @@ class ContentSettings(RecordModel):
         ["en", "pt", "es", "de", "nl", "en-GB", "fr", "hi", "ja", "zh-CN", "zh-TW"],
         description="Preferred languages for YouTube transcripts",
     )
+    export_clean_model: Optional[str] = Field(
+        None,
+        description=(
+            "Model record ID used for AI 'Export and clean'. "
+            "Unset (None) auto-selects the cheapest, fastest model for the active provider "
+            "(e.g. Luna for OpenAI, Haiku for Claude, Flash for Gemini)."
+        ),
+    )
+    export_clean_effort: Optional[Literal["low", "medium", "high"]] = Field(
+        "low",
+        description="Reasoning effort for AI 'Export and clean' (defaults to low for speed and cost).",
+    )
